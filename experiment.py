@@ -25,7 +25,7 @@ import optuna
 import os
 from datetime import datetime
 import time
-
+from typing import Literal
 
 ################# Making of dataset #################
 def scale_to_volume(mesh, target_volume):
@@ -348,9 +348,53 @@ class NoisyPlatonicSolids(Dataset):
         s = self.samples[idx]
         return s["V"], s["VF"], s["VE"], s["EF"], s["FC"] ,s["label"] 
 
+def sparse_block_diag(sparse_list):
+    # sparse_list: list of 2D sparse COO tensors
+    device = sparse_list[0].device
+    dtype = sparse_list[0].dtype
+
+    rows = []
+    cols = []
+    vals = []
+
+    row_offset = 0
+    col_offset = 0
+
+    for S in sparse_list:
+        S = S.coalesce()
+        i = S.indices()      # (2, nnz)
+        v = S.values()       # (nnz,)
+        n_rows, n_cols = S.shape
+
+        # shift indices for this block
+        rows.append(i[0] + row_offset)
+        cols.append(i[1] + col_offset)
+        vals.append(v)
+
+        row_offset += n_rows
+        col_offset += n_cols
+
+    rows = torch.cat(rows)
+    cols = torch.cat(cols)
+    vals = torch.cat(vals)
+
+    indices = torch.stack([rows, cols])
+    shape = (row_offset, col_offset)
+
+    return torch.sparse_coo_tensor(indices, vals, size=shape, device=device, dtype=dtype)
+
+def batch_vector(V_list):
+    batch_vector_list = []
+    for i,v in enumerate(V_list):
+        batch_vector_list.append(torch.full((v.shape[0],), i, dtype=torch.int64))
+    return torch.cat(batch_vector_list,dim=0)
+
 def platonic_collate(batch):
-    V, VF, VE, EF, FC, label = batch[0]
-    return V, VF, VE, EF, FC, label
+    V_list, VF_list, VE_list, EF_list, FC_list, label_list = zip(*batch)
+    V_stacked = torch.cat(V_list,dim=0)
+    b_vec = batch_vector(V_list)
+
+    return V_stacked, sparse_block_diag(VF_list), sparse_block_diag(VE_list), sparse_block_diag(EF_list), sparse_block_diag(FC_list), torch.cat(label_list,dim=0), b_vec
 
 def ve_convert(VE):
     # VE: torch.sparse_coo_tensor of shape [num_vertices, num_edges]
@@ -375,69 +419,125 @@ def ve_convert(VE):
     return edge_index
 
 ################# TNN #################
+class CCConvLayer(nn.Module):
+	def __init__(
+		self,
+		in_channels,
+		out_channels,
+		aggr_norm: bool = False,
+		att: bool = False,
+		initialization: Literal["xavier_uniform"] = "xavier_uniform",
+		initialzation_gain: float = 1.414,
+		update_func: Literal["sigmoid","relu",None] = None
+	):
+		super().__init__()
+		self.in_channels = in_channels
+		self.out_channels = out_channels
+
+		self.aggr_norm = aggr_norm
+		self.att = att
+		self.initialization = initialization
+		self.initialization_gain = initialzation_gain
+		self.update_func = update_func
+
+		self.init_parameters()
+	
+	def init_parameters(self):
+		self.W = nn.Parameter(torch.empty(self.out_channels,self.in_channels, dtype=torch.float32))
+		nn.init.xavier_uniform_(self.W)
+
+	def update(self,x):
+		match self.update_func:
+			case "sigmoid":
+				return torch.sigmoid(x)
+			case "relu":
+				return torch.nn.functional.relu(x)
+			case _:
+				return x
+
+	def forward(self,x,neighborhood):
+		x_1 = x @ self.W.T
+		x_2 = neighborhood @ x_1 
+		x_3 = self.update(x_2)
+		return x_3
+	
 class TNN(nn.Module):
-    def __init__(self,node_channels,channels_rk1,channels_rk2,channels_rk3, size_hidden_layer,lr, epochs):
-        super().__init__()
+	def __init__(self,node_channels,channels_rk1,channels_rk2,channels_rk3, size_hidden_layer,lr, epochs):
+		super().__init__()
 
-        self.lr = lr
-        self.epochs = epochs
+		self.lr = lr
+		self.epochs = epochs
 
-        self.conv_0_to_1 = Conv(in_channels = node_channels, out_channels =  channels_rk1, update_func="relu")
-        self.conv_1_to_2 = Conv(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
-        self.conv_2_to_3 = Conv(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
-        # Add later 0 -> 2
-        #self.conv_0_to_2 = Conv(in_channels = node_channels, out_channels =  channels_rk2, update_func="relu")
-        self.fc1 = nn.Linear(channels_rk3,64)
-        self.fc2 = nn.Linear(64,5)
+		self.conv_0_to_1 = CCConvLayer(in_channels = node_channels, out_channels =  channels_rk1, update_func="relu")
+		self.conv_1_to_2 = CCConvLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
+		self.conv_2_to_3 = CCConvLayer(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
+		# Add later 0 -> 2
+		#self.conv_0_to_2 = Conv(in_channels = node_channels, out_channels =  channels_rk2, update_func="relu")
+		self.fc1 = nn.Linear(channels_rk3,64)
+		self.fc2 = nn.Linear(64,5)
 
-    def forward(self,x_0,incidence_0_1,incidence_1_2,incidence_2_3):
-        x_0 = x_0.to(torch.float32)
-        #x_0 = x_0.view(28 * 28,1)
-        x_1_out = self.conv_0_to_1(x_0,incidence_0_1.T)
-        x_2_out = self.conv_1_to_2(x_1_out,incidence_1_2.T)
-        x_3_out = self.conv_2_to_3(x_2_out,incidence_2_3.T)
-        x = torch.flatten(x_3_out)
-        x = relu(self.fc1(x))
-        x = self.fc2(x)
-        return x.view(1,5)
-    
-    def fit(self,train_loader):
-        optimizer = optim.AdamW(self.parameters(),lr=self.lr)
-        criterion = nn.CrossEntropyLoss()
-
-        losses = []
-        self.train()
-        start = time.perf_counter()
-        for epoch in range(self.epochs):
-            total_loss = 0
-            for V, VF, VE, EF, FC,label in train_loader:
-                optimizer.zero_grad()
-                output = self(V, VE, EF, FC)
-                loss = criterion(output, label)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
-            losses.append(total_loss/len(train_loader))
-            print(f"Epoch: {epoch+1}, Loss: {total_loss/len(train_loader)}")
-        end = time.perf_counter()
-        print(f"Training time: {end-start} seconds")
-        
-        return losses, end-start, (end-start)/self.epochs
-
-    def test(self, test_loader):
-        self.eval()
-        with torch.no_grad():
-            correct = 0
-            total = 0
-            for V, VF, VE, EF, FC,label in test_loader:
-                output = self(V, VE, EF, FC)
-                pred = output.argmax(dim=1, keepdim=True)
-                correct += pred.eq(label.view_as(pred)).sum().item()
-                total += label.size(0)
-            accuracy = 100. * correct/total
-            print(f"Test accuracy: {accuracy:.2f}%")
-        
-        return accuracy
+	def forward(self,x_0,incidence_0_1,incidence_1_2,incidence_2_3):
+		x_0 = x_0.to(torch.float32)
+		#x_0 = x_0.view(28 * 28,1)
+		x_1_out = self.conv_0_to_1(x_0,incidence_0_1.T)
+		x_2_out = self.conv_1_to_2(x_1_out,incidence_1_2.T)
+		x_3_out = self.conv_2_to_3(x_2_out,incidence_2_3.T)
+		x = torch.flatten(x_3_out, start_dim=1)
+		x = relu(self.fc1(x))
+		x = self.fc2(x)
+		return x
+		
+	def fit(self,train_loader,device="cpu"):
+		self.to(device)
+		optimizer = optim.AdamW(self.parameters(),lr=self.lr)
+		criterion = nn.CrossEntropyLoss()
+		
+		losses = []
+		self.train()
+		start = time.perf_counter()
+		for epoch in range(self.epochs):
+			total_loss = 0
+			for V, VF, VE, EF, FC,label,_ in train_loader:
+				V = V.to(device)
+				VF = VF.to(device)
+				VE = VE.to(device)
+				EF = EF.to(device)
+				FC = FC.to(device)
+				label = label.to(device)
+				optimizer.zero_grad()
+				output = self(V, VE, EF, FC)
+				loss = criterion(output, label)
+				loss.backward()
+				optimizer.step()
+				total_loss += loss.item()
+			losses.append(total_loss/len(train_loader))
+			print(f"Epoch: {epoch+1}, Loss: {total_loss/len(train_loader)}")
+		end = time.perf_counter()
+		print(f"Training time: {end-start} seconds")
+				
+		return losses, end-start, (end-start)/self.epochs
+		
+	def	test(self, test_loader,device="cpu"):
+		self.to(device)
+		self.eval()
+		with torch.no_grad():
+			correct = 0
+			total = 0
+			for V, VF, VE, EF, FC,label,_ in test_loader:
+				V = V.to(device)
+				VF = VF.to(device)
+				VE = VE.to(device)
+				EF = EF.to(device)
+				FC = FC.to(device)
+				label = label.to(device)
+				output = self(V, VE, EF, FC)
+				pred = output.argmax(dim=1, keepdim=True)
+				correct += pred.eq(label.view_as(pred)).sum().item()
+				total += label.size(0)
+			accuracy = 100. * correct/total
+			print(f"Test accuracy: {accuracy:.2f}%")
+				
+		return accuracy
 
 ################# GCN #################
 
@@ -452,6 +552,7 @@ class GCN(torch.nn.Module):
         self.conv2 = GCNConv(hidden_channels1, hidden_channels2)
         self.fc1   = torch.nn.Linear(hidden_channels2, hidden_channels3)
         self.fc2   = torch.nn.Linear(hidden_channels3, out_channels)	
+
     def forward(self, x, edge_index, batch):
     	# 1) Node-level GCN
     	x = self.conv1(x, edge_index).relu()
@@ -462,7 +563,8 @@ class GCN(torch.nn.Module):
     	x = self.fc2(x)
     	return x
         
-    def fit(self, train_loader):
+    def fit(self, train_loader, device="cpu"):
+        self.to(device)
         optimizer = optim.Adam(self.parameters(),lr=self.lr)
         criterion = nn.CrossEntropyLoss()
 
@@ -471,12 +573,17 @@ class GCN(torch.nn.Module):
         start = time.perf_counter()
         for epoch in range(self.epochs):
             total_loss = 0
-            for V, VF, VE, EF, FC,label in train_loader:
+            for V, VF, VE, EF, FC,label, batch_vec in train_loader:
                 V = V.to(torch.float32)
-                N = V.size(0)
-                batch_vec = torch.zeros(N, dtype=torch.long, device=V.device)
+                VE = ve_convert(VE)
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
                 optimizer.zero_grad()
-                output = self(V, ve_convert(VE), batch_vec)
+                output = self(V, VE, batch_vec)
                 loss = criterion(output, label)
                 loss.backward()
                 optimizer.step()
@@ -488,16 +595,22 @@ class GCN(torch.nn.Module):
         
         return losses, end-start, (end-start)/self.epochs
 
-    def test(self, test_loader):
+    def test(self, test_loader, device="cpu"):
+        self.to(device)
         self.eval()
         with torch.no_grad():
             correct = 0
             total = 0
-            for V, VF, VE, EF, FC,label in test_loader:
+            for V, VF, VE, EF, FC,label, batch_vec in test_loader:
                 V = V.to(torch.float32)
-                N = V.size(0)
-                batch_vec = torch.zeros(N, dtype=torch.long, device=V.device)
-                output = self(V, ve_convert(VE), batch_vec)
+                VE = ve_convert(VE)
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
+                output = self(V, VE, batch_vec)
                 pred = output.argmax(dim=1, keepdim=True)
                 correct += pred.eq(label.view_as(pred)).sum().item()
                 total += label.size(0)
@@ -530,7 +643,8 @@ class GAN(nn.Module):
     	x = self.fc2(x)
     	return x
         
-    def fit(self, train_loader):
+    def fit(self, train_loader, device="cpu"):
+        self.to(device)
         optimizer = optim.Adam(self.parameters(),lr=self.lr)
         criterion = nn.CrossEntropyLoss()
 
@@ -539,12 +653,17 @@ class GAN(nn.Module):
         start = time.perf_counter()
         for epoch in range(self.epochs):
             total_loss = 0
-            for V, VF, VE, EF, FC,label in train_loader:
+            for V, VF, VE, EF, FC,label, batch_vec in train_loader:
                 V = V.to(torch.float32)
-                N = V.size(0)
-                batch_vec = torch.zeros(N, dtype=torch.long, device=V.device)
+                VE = ve_convert(VE)
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
                 optimizer.zero_grad()
-                output = self(V, ve_convert(VE), batch_vec)
+                output = self(V, VE, batch_vec)
                 loss = criterion(output, label)
                 loss.backward()
                 optimizer.step()
@@ -555,16 +674,22 @@ class GAN(nn.Module):
         print(f"Training time: {end-start} seconds")
         return losses, end-start, (end-start)/self.epochs
 
-    def test(self, test_loader):
+    def test(self, test_loader, device="cpu"):
+        self.to(device)
         self.eval()
         with torch.no_grad():
             correct = 0
             total = 0
-            for V, VF, VE, EF, FC,label in test_loader:
+            for V, VF, VE, EF, FC,label, batch_vec in test_loader:
                 V = V.to(torch.float32)
-                N = V.size(0)
-                batch_vec = torch.zeros(N, dtype=torch.long, device=V.device)
-                output = self(V, ve_convert(VE), batch_vec)
+                VE = ve_convert(VE)
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
+                output = self(V, VE, batch_vec)
                 pred = output.argmax(dim=1, keepdim=True)
                 correct += pred.eq(label.view_as(pred)).sum().item()
                 total += label.size(0)
@@ -627,7 +752,8 @@ class GIN(torch.nn.Module):
     	x = self.fc2(x)
     	return x
 
-    def fit(self, train_loader):
+    def fit(self, train_loader, device="cpu"):
+        self.to(device)
         optimizer = optim.Adam(self.parameters(),lr=self.lr)
         criterion = nn.CrossEntropyLoss()
 
@@ -636,12 +762,17 @@ class GIN(torch.nn.Module):
         start = time.perf_counter()
         for epoch in range(self.epochs):
             total_loss = 0
-            for V, VF, VE, EF, FC,label in train_loader:
+            for V, VF, VE, EF, FC,label, batch_vec in train_loader:
                 V = V.to(torch.float32)
-                N = V.size(0)
-                batch_vec = torch.zeros(N, dtype=torch.long, device=V.device)
+                VE = ve_convert(VE)
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
                 optimizer.zero_grad()
-                output = self(V, ve_convert(VE), batch_vec)
+                output = self(V, VE, batch_vec)
                 loss = criterion(output, label)
                 loss.backward()
                 optimizer.step()
@@ -653,16 +784,22 @@ class GIN(torch.nn.Module):
         
         return losses, end-start, (end-start)/self.epochs
 
-    def test(self, test_loader):
+    def test(self, test_loader, device="cpu"):
+        self.to(device)
         self.eval()
         with torch.no_grad():
             correct = 0
             total = 0
-            for V, VF, VE, EF, FC,label in test_loader:
+            for V, VF, VE, EF, FC,label, batch_vec in test_loader:
                 V = V.to(torch.float32)
-                N = V.size(0)
-                batch_vec = torch.zeros(N, dtype=torch.long, device=V.device)
-                output = self(V, ve_convert(VE), batch_vec)
+                VE = ve_convert(VE)
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
+                output = self(V, VE, batch_vec)
                 pred = output.argmax(dim=1, keepdim=True)
                 correct += pred.eq(label.view_as(pred)).sum().item()
                 total += label.size(0)
@@ -672,7 +809,7 @@ class GIN(torch.nn.Module):
         return accuracy
 
 ################# HP-Tuning #################
-def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_seed):
+def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_seed, device="cpu"):
     fixed_params = {}
     for hp in hps:
         if hp[1] == "fixed":
@@ -680,10 +817,10 @@ def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_s
     
     # Load data
     dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
-    train_loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=platonic_collate)
+    train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 
     dataset = NoisyPlatonicSolids({name: 100 for name in SOLID_TYPES},data_params[0],data_params[1])
-    test_loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=platonic_collate)
+    test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 
     def objective(trial):
         hp_trial_dict = {}
@@ -699,8 +836,8 @@ def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_s
         accuracies = []
         for i in range(runs_per_hp_comb):
             cur_model = model(**hp_trial_dict,**fixed_params)
-            cur_model.fit(train_loader)
-            acc = cur_model.test(test_loader)
+            cur_model.fit(train_loader,device=device)
+            acc = cur_model.test(test_loader,device=device)
             accuracies.append(acc)
         
         return np.max(accuracies)
@@ -728,16 +865,15 @@ HYPERPARAMS = {
 ################# MAIN #################
 
 if __name__ == "__main__":
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--model", type=str, required=True)
     argparser.add_argument("--path", type=str, default=os.getcwd())
     argparser.add_argument("--seed", type=int, default=42)
+    argparser.add_argument("--device",type=str, default="cpu")
 
     args = argparser.parse_args()
     SEED = args.seed
+    DEVICE = args.device
 
 
     MODELS = {"TNN": TNN, "GCN": GCN, "GAN": GAN, "GIN": GIN}
@@ -749,31 +885,31 @@ if __name__ == "__main__":
 
     data_params = (40, 0.01)
     hps = HYPERPARAMS[args.model]
-    n_trials = 2
-    runs_per_hp_comb = 1
-    study_dataframe, best_hps = hp_optimization(model, hps, data_params, n_trials, runs_per_hp_comb, SEED)
+    n_trials = 50
+    runs_per_hp_comb = 3
+    study_dataframe, best_hps = hp_optimization(model, hps, data_params, n_trials, runs_per_hp_comb, SEED,device=DEVICE)
 
-    top5 = study_dataframe[study_dataframe["state"] == "COMPLETE"].sort_values("value", ascending=True).head(5)
+    top5 = study_dataframe[study_dataframe["state"] == "COMPLETE"].sort_values("value", ascending=False).head(5)
     top5.to_csv(f"{path}/top5_params.csv")
 
     mnoev = np.arange(40, 160, 10)
     epsf = [0.01,0.1,0.2,0.3]
 
     results = {}
-    runs_per_data_params = 2
+    runs_per_data_params = 5
     for m,e in product(mnoev, epsf):
         results[f"{m}_{e}"] = {}
         dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},m,e)
-        train_loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=platonic_collate)
+        train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 
         dataset = NoisyPlatonicSolids({name: 100 for name in SOLID_TYPES},m,e)
-        test_loader = DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=platonic_collate)
+        test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 
         accuracies = []
         for i in range(runs_per_data_params):
             cur_model = model(**best_hps)
-            losses, total_time, time_per_epoch = cur_model.fit(train_loader)
-            accs = cur_model.test(test_loader)
+            losses, total_time, time_per_epoch = cur_model.fit(train_loader, device=DEVICE)
+            accs = cur_model.test(test_loader, device=DEVICE)
             accuracies.append(accs)
 
             results[f"{m}_{e}"][f"run_{i+1}"] = {"losses":losses,"accuracy":accs,"total_time":total_time,"time_per_epoch":time_per_epoch}
