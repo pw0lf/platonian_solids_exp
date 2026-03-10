@@ -27,6 +27,9 @@ from datetime import datetime
 import time
 from typing import Literal
 
+from torch_geometric.data import Data, Batch
+from torch_geometric.loader import DataLoader
+
 ################# Making of dataset #################
 def scale_to_volume(mesh, target_volume):
     scale = (target_volume / mesh.volume) ** (1/3)
@@ -348,6 +351,8 @@ class NoisyPlatonicSolids(Dataset):
         s = self.samples[idx]
         return s["V"], s["VF"], s["VE"], s["EF"], s["FC"] ,s["label"] 
 
+
+
 def sparse_block_diag(sparse_list):
     # sparse_list: list of 2D sparse COO tensors
     device = sparse_list[0].device
@@ -417,6 +422,34 @@ def ve_convert(VE):
     edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
 
     return edge_index
+
+def make_matrices_for_graph(mesh):
+    V = torch.from_numpy(mesh.vertices)        # (n_vertices, 3), float
+    E = torch.from_numpy(mesh.edges_unique).long() 
+
+    edge_index = torch.cat(
+        [E.t(), E.flip(1).t()],  # [2, n_edges] + [2, n_edges]
+        dim=1
+    )
+    return V, edge_index
+
+def mesh_to_data(name, num_of_extra_vertices, eps_factor):
+    mesh = make_noisy_platonic(name, num_of_extra_vertices, eps_factor)
+    V, edge_index = make_matrices_for_graph(mesh)  # V: [N,3], edge_index: [2,2E]
+
+    x = V.float()          # node features
+    y = torch.tensor([name_to_label[name]], dtype=torch.long) 
+
+    return Data(x=x, edge_index=edge_index, y=torch.tensor([y]))
+
+def build_dataset(num_per_type, num_of_extra_vertices, eps_factor):
+    data_list = []
+    for name, count in num_per_type.items():
+        for _ in range(count):
+            data = mesh_to_data(name, num_of_extra_vertices, eps_factor)
+            data_list.append(data)
+    return data_list
+
 
 ################# TNN #################
 class CCConvLayer(nn.Module):
@@ -573,19 +606,11 @@ class GCN(torch.nn.Module):
         start = time.perf_counter()
         for epoch in range(self.epochs):
             total_loss = 0
-            for V, VF, VE, EF, FC,label, batch_vec in train_loader:
-                V = V.to(torch.float32)
-                VE = ve_convert(VE)
-                V = V.to(device)
-                VF = VF.to(device)
-                VE = VE.to(device)
-                EF = EF.to(device)
-                FC = FC.to(device)
-                batch_vec = batch_vec.to(device)
-                label = label.to(device)
+            for data in train_loader:
+                data = data.to(device)
                 optimizer.zero_grad()
-                output = self(V, VE, batch_vec)
-                loss = criterion(output, label)
+                output = self(data.x, data.edge_index,data.batch)
+                loss = criterion(output, data.y)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
@@ -602,20 +627,12 @@ class GCN(torch.nn.Module):
         with torch.no_grad():
             correct = 0
             total = 0
-            for V, VF, VE, EF, FC,label, batch_vec in test_loader:
-                V = V.to(torch.float32)
-                VE = ve_convert(VE)
-                V = V.to(device)
-                VF = VF.to(device)
-                VE = VE.to(device)
-                EF = EF.to(device)
-                FC = FC.to(device)
-                batch_vec = batch_vec.to(device)
-                label = label.to(device)
-                output = self(V, VE, batch_vec)
+            for data in test_loader:
+                data = data.to(device)
+                output = self(data.x, data.edge_index,data.batch)
                 pred = output.argmax(dim=1, keepdim=True)
-                correct += pred.eq(label.view_as(pred)).sum().item()
-                total += label.size(0)
+                correct += pred.eq(data.y.view_as(pred)).sum().item()
+                total += data.y.size(0)
             accuracy = 100. * correct/total
             print(f"Test accuracy: {accuracy:.2f}%")
         
@@ -655,19 +672,11 @@ class GAN(nn.Module):
         start = time.perf_counter()
         for epoch in range(self.epochs):
             total_loss = 0
-            for V, VF, VE, EF, FC,label, batch_vec in train_loader:
-                V = V.to(torch.float32)
-                VE = ve_convert(VE)
-                V = V.to(device)
-                VF = VF.to(device)
-                VE = VE.to(device)
-                EF = EF.to(device)
-                FC = FC.to(device)
-                batch_vec = batch_vec.to(device)
-                label = label.to(device)
+            for data in train_loader:
+                data = data.to(device)
                 optimizer.zero_grad()
-                output = self(V, VE, batch_vec)
-                loss = criterion(output, label)
+                output = self(data.x, data.edge_index,data.batch)
+                loss = criterion(output, data.y)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
@@ -683,20 +692,12 @@ class GAN(nn.Module):
         with torch.no_grad():
             correct = 0
             total = 0
-            for V, VF, VE, EF, FC,label, batch_vec in test_loader:
-                V = V.to(torch.float32)
-                VE = ve_convert(VE)
-                V = V.to(device)
-                VF = VF.to(device)
-                VE = VE.to(device)
-                EF = EF.to(device)
-                FC = FC.to(device)
-                batch_vec = batch_vec.to(device)
-                label = label.to(device)
-                output = self(V, VE, batch_vec)
+            for data in test_loader:
+                data = data.to(device)
+                output = self(data.x, data.edge_index,data.batch)
                 pred = output.argmax(dim=1, keepdim=True)
-                correct += pred.eq(label.view_as(pred)).sum().item()
-                total += label.size(0)
+                correct += pred.eq(data.y.view_as(pred)).sum().item()
+                total += data.y.size(0)
             accuracy = 100. * correct/total
             print(f"Test accuracy: {accuracy:.2f}%")
         
@@ -766,19 +767,11 @@ class GIN(torch.nn.Module):
         start = time.perf_counter()
         for epoch in range(self.epochs):
             total_loss = 0
-            for V, VF, VE, EF, FC,label, batch_vec in train_loader:
-                V = V.to(torch.float32)
-                VE = ve_convert(VE)
-                V = V.to(device)
-                VF = VF.to(device)
-                VE = VE.to(device)
-                EF = EF.to(device)
-                FC = FC.to(device)
-                batch_vec = batch_vec.to(device)
-                label = label.to(device)
+            for data in train_loader:
+                data = data.to(device)
                 optimizer.zero_grad()
-                output = self(V, VE, batch_vec)
-                loss = criterion(output, label)
+                output = self(data.x, data.edge_index,data.batch)
+                loss = criterion(output, data.y)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
@@ -795,20 +788,12 @@ class GIN(torch.nn.Module):
         with torch.no_grad():
             correct = 0
             total = 0
-            for V, VF, VE, EF, FC,label, batch_vec in test_loader:
-                V = V.to(torch.float32)
-                VE = ve_convert(VE)
-                V = V.to(device)
-                VF = VF.to(device)
-                VE = VE.to(device)
-                EF = EF.to(device)
-                FC = FC.to(device)
-                batch_vec = batch_vec.to(device)
-                label = label.to(device)
-                output = self(V, VE, batch_vec)
+            for data in test_loader:
+                data = data.to(device)
+                output = self(data.x, data.edge_index,data.batch)
                 pred = output.argmax(dim=1, keepdim=True)
-                correct += pred.eq(label.view_as(pred)).sum().item()
-                total += label.size(0)
+                correct += pred.eq(data.y.view_as(pred)).sum().item()
+                total += data.y.size(0)
             accuracy = 100. * correct/total
             print(f"Test accuracy: {accuracy:.2f}%")
         
@@ -822,11 +807,18 @@ def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_s
             fixed_params[hp[0]] = hp[2]
     
     # Load data
-    dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
-    train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
+    if isinstance(model,TNN):
+        dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
+        train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 
-    dataset = NoisyPlatonicSolids({name: 100 for name in SOLID_TYPES},data_params[0],data_params[1])
-    test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
+        dataset = NoisyPlatonicSolids({name: 100 for name in SOLID_TYPES},data_params[0],data_params[1])
+        test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
+    else:
+        data_list = build_dataset({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
+        train_loader = DataLoader(data_list, batch_size=32, shuffle=True)
+
+        data_list = build_dataset({name: 100 for name in SOLID_TYPES},data_params[0],data_params[1])
+        test_loader = DataLoader(data_list, batch_size=32, shuffle=True)
 
     def objective(trial):
         hp_trial_dict = {}
@@ -905,11 +897,18 @@ if __name__ == "__main__":
     runs_per_data_params = 5
     for m,e in product(mnoev, epsf):
         results[f"{m}_{e}"] = {}
-        dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},m,e)
-        train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
+        if args.model=="TNN":
+            dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},m,e)
+            train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 
-        dataset = NoisyPlatonicSolids({name: 100 for name in SOLID_TYPES},m,e)
-        test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
+            dataset = NoisyPlatonicSolids({name: 100 for name in SOLID_TYPES},m,e)
+            test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
+        else:
+            data_list = build_dataset({name: 500 for name in SOLID_TYPES},m,e)
+            train_loader = DataLoader(data_list, batch_size=32, shuffle=True)
+
+            data_list = build_dataset({name: 100 for name in SOLID_TYPES},m,e)
+            test_loader = DataLoader(data_list, batch_size=32, shuffle=True)
 
         accuracies = []
         for i in range(runs_per_data_params):
