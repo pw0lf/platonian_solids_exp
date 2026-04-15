@@ -9,15 +9,14 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn.models import SchNet
 from torch.optim.lr_scheduler import ExponentialLR
 
-sys.path.append("../../data_loader")
-from mol3d import Mol3d_PyG
+from data_loader.mol3d import Mol3d_PyG
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--path", required=True, help="Path to save results JSON")
 args = parser.parse_args()
 
 # Dataset
-dataset = Mol3d_PyG(root="../../data/Molecule3D/raw", size=10000)
+dataset = Mol3d_PyG(root="data/Molecule3D/raw", size=10000)
 print(len(dataset))
 
 batch_size = 32
