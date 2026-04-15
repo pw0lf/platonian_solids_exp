@@ -16,13 +16,13 @@ parser.add_argument("--path", required=True, help="Path to save results JSON")
 args = parser.parse_args()
 
 # Dataset
-dataset = Mol3d_PyG(root="data/Molecule3D/raw", size=10000)
+dataset = Mol3d_PyG(root="data/data/raw", size=100000)
 print(len(dataset))
 
 batch_size = 32
-train_dataloader = DataLoader(Subset(dataset, range(6000)), batch_size=batch_size, shuffle=True)
-val_dataloader = DataLoader(Subset(dataset, range(6000, 8000)), batch_size=batch_size)
-test_dataloader = DataLoader(Subset(dataset, range(8000, len(dataset))), batch_size=batch_size)
+train_dataloader = DataLoader(Subset(dataset, range(60000)), batch_size=batch_size, shuffle=True)
+val_dataloader = DataLoader(Subset(dataset, range(60000, 80000)), batch_size=batch_size)
+test_dataloader = DataLoader(Subset(dataset, range(80000, len(dataset))), batch_size=batch_size)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(device)
