@@ -97,7 +97,7 @@ def make_matrices(mol):
     icd_values = torch.ones(icd_indices.shape[1],dtype=torch.float32)
     icd01_matrix = torch.sparse_coo_tensor(icd_indices, icd_values, size=(n_vertices,n_edges)).coalesce()
     adj_matrix = coo_matrix(
-        (np.ones(len(adj_cols)),(np.array(adj_rows,dtype=np.long), np.array(adj_cols,dtype=np.long))),
+        (np.ones(len(adj_cols)),(np.array(adj_rows,dtype=np.int64), np.array(adj_cols,dtype=np.int64))),
         shape=(n_vertices,n_vertices)
     )
     icd02_matrix = make_incidence_0_2(adj_matrix, n_vertices)
