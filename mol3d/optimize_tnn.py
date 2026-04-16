@@ -25,30 +25,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Subset, DataLoader
 
-from data_loader.mol3d import Mol3d_CycleLifting, Mol3d_CycleLifting_morefeatures
+from data_loader.mol3d import Mol3d_CycleLifting_distfeatures
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--path", required=True, help="Path to save results JSON")
 args = parser.parse_args()
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def scatter_mean_2d(src, index, dim_size):
-    """Mean-pool rows of src into dim_size buckets."""
-    out = torch.zeros(dim_size, src.shape[1], device=src.device, dtype=src.dtype)
-    out.scatter_add_(0, index.unsqueeze(1).expand_as(src), src)
-    count = torch.zeros(dim_size, device=src.device, dtype=src.dtype)
-    count.scatter_add_(0, index, torch.ones(len(index), device=src.device, dtype=src.dtype))
-    return out / count.clamp(min=1).unsqueeze(1)
-
-
-def center_xyz(x_0, batch_rank0, n_molecules):
-    """Subtract per-molecule centroid from xyz coordinates."""
-    xyz = x_0[:, 1:]                                         # (N_atoms, 3)
-    centroid = scatter_mean_2d(xyz, batch_rank0, n_molecules) # (N_mol, 3)
-    xyz_centered = xyz - centroid[batch_rank0]
-    return torch.cat([x_0[:, :1], xyz_centered], dim=1)      # (N_atoms, 4)
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -146,16 +127,14 @@ class TNN(nn.Module):
         self.fc2 = nn.Linear(size_hidden_layer1, size_hidden_layer2)
         self.fc3 = nn.Linear(size_hidden_layer2, output_channels)
 
-    def forward(self, x_0, incidence_0_1, incidence_1_2, incidence_2_3,
-                batch_rank0, n_molecules):
+    def forward(self, x_0, x_1 ,incidence_0_1, incidence_1_2, incidence_2_3):
         x_0 = x_0.to(torch.float32)
-        x_0 = center_xyz(x_0, batch_rank0, n_molecules)
 
-        x_1_out = self.conv_0_to_1(x_0,     incidence_0_1.T)
-        x_2_out = self.conv_1_to_2(x_1_out,  incidence_1_2.T)
+        #x_1_out = self.conv_0_to_1(x_0,     incidence_0_1.T)
+        x_2_out = self.conv_1_to_2(x_1,  incidence_1_2.T)
         x_3_out = self.conv_2_to_3(x_2_out,  incidence_2_3.T)
 
-        x_1_new = self.att_0_to_1(x_0,     incidence_0_1.T, x_1_out)
+        x_1_new = self.att_0_to_1(x_0,     incidence_0_1.T, x_1)
         x_2_new = self.att_1_to_2(x_1_new,  incidence_1_2.T, x_2_out)
         x_3_new = self.att_2_to_3(x_2_new,  incidence_2_3.T, x_3_out)
 
@@ -209,27 +188,21 @@ def sparse_block_diag(sparse_list):
                                    device=device, dtype=dtype)
 
 
-def batch_vector(tensors):
-    return torch.cat([torch.full((t.shape[0],), i, dtype=torch.int64)
-                      for i, t in enumerate(tensors)])
-
-
 def collate(batch):
-    x, icd01, icd02, icd12, icd23, homolumogap = zip(*batch)
+    node_feat, edge_feat, icd01, icd02, icd12, icd23, homolumogap = zip(*batch)
     return (
-        torch.cat(x, dim=0),
+        torch.cat(node_feat, dim=0),   # x_0: atomic numbers
+        torch.cat(edge_feat, dim=0),   # x_1: bond distances
         sparse_block_diag(icd01),
         sparse_block_diag(icd12),
         sparse_block_diag(icd23),
         torch.cat(homolumogap, dim=0),
-        batch_vector(x),   # atom → molecule index
-        len(x),            # n_molecules in batch
     )
 
 
 # ── Dataset ───────────────────────────────────────────────────────────────────
 
-dataset = Mol3d_CycleLifting_morefeatures(root="data/data/raw", size=100000)
+dataset = Mol3d_CycleLifting_distfeatures(root="data/data/raw", size=100000)
 print(len(dataset))
 
 batch_size = 64
@@ -247,7 +220,7 @@ print(device)
 
 # ── Model init ────────────────────────────────────────────────────────────────
 
-model = TNN(10, 64, 128, 256, 128, 64, 1)
+model = TNN(1, 1, 128, 256, 128, 64, 1)
 print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
