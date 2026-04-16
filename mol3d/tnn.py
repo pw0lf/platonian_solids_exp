@@ -9,8 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import Subset
 from torch.utils.data import DataLoader
 
-sys.path.append("../../data_loader")
-from mol3d import Mol3d_CycleLifting
+from data_loader.mol3d import Mol3d_CycleLifting
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--path", required=True, help="Path to save results JSON")
@@ -49,29 +48,103 @@ class CCConvLayer(nn.Module):
         x_2 = neighborhood @ x_1
         return self.update(x_2)
 
+class CCAttLayer(nn.Module):
+	def __init__(
+		self,
+		in_channels,
+		out_channels,
+		aggr_norm: bool = False,
+		initialization: Literal["xavier_uniform"] = "xavier_uniform",
+		initialzation_gain: float = 1.414,
+		update_func: Literal["sigmoid","relu","leakyrelu",None] = None
+	):
+		super().__init__()
+		self.in_channels = in_channels
+		self.out_channels = out_channels
+
+		self.aggr_norm = aggr_norm
+		self.initialization = initialization
+		self.initialization_gain = initialzation_gain
+		self.update_func = update_func
+
+		self.init_parameters()
+	
+	def init_parameters(self):
+		self.Ws = nn.Parameter(torch.empty(self.out_channels,self.in_channels, dtype=torch.float32))
+		self.Wt = nn.Parameter(torch.empty(self.in_channels,self.out_channels, dtype=torch.float32))
+		self.a_s = nn.Parameter(torch.empty(self.out_channels, dtype=torch.float32))
+		self.a_t = nn.Parameter(torch.empty(self.in_channels, dtype=torch.float32))
+		nn.init.xavier_uniform_(self.Ws)
+		nn.init.xavier_uniform_(self.Wt)
+		nn.init.xavier_uniform_(self.a_s.unsqueeze(0))
+		nn.init.xavier_uniform_(self.a_t.unsqueeze(0))
+
+	def update(self,x):
+		match self.update_func:
+			case "sigmoid":
+				return torch.sigmoid(x)
+			case "relu":
+				return torch.nn.functional.relu(x)
+			case "leakyrelu":
+				return torch.nn.functional.leaky_relu(x)
+			case _:
+				return x
+
+	def forward(self, x, neighborhood, x_target):
+		neighborhood = neighborhood.coalesce()
+		Z_s = x @ self.Ws.T        # (N_src, out_ch)
+		Z_t = x_target @ self.Wt.T # (N_tgt, out_ch) — fix Wt shape too
+		
+		rows, cols = neighborhood.indices()  # rows=tgt idx, cols=src idx
+		e = (Z_s[cols] @ self.a_s) + (Z_t[rows] @ self.a_t)
+		e = F.leaky_relu(e, negative_slope=0.2)
+		
+		# sparse softmax: subtract max per target for numerical stability
+		e_max = torch.zeros(x_target.shape[0], device=x.device)
+		e_max.scatter_reduce_(0, rows, e, reduce='amax', include_self=True)
+		e_exp = torch.exp(e - e_max[rows])
+		e_sum = torch.zeros(x_target.shape[0], device=x.device)
+		e_sum.scatter_add_(0, rows, e_exp)
+		att = e_exp / (e_sum[rows] + 1e-8)
+		
+		# weighted aggregation
+		weighted = att.unsqueeze(1) * Z_s[cols]  # (nnz, out_ch)
+		out = torch.zeros(x_target.shape[0], Z_s.shape[1], device=x.device)
+		out.scatter_add_(0, rows.unsqueeze(1).expand_as(weighted), weighted)
+		return self.update(out)
 
 class TNN(nn.Module):
-    def __init__(self, node_channels, channels_rk1, channels_rk2, channels_rk3, hidden_dim1, hidden_dim2, out_channels):
-        super().__init__()
-        self.conv_0_to_1 = CCConvLayer(node_channels, channels_rk1, update_func="leakyrelu")
-        self.conv_1_to_2 = CCConvLayer(channels_rk1, channels_rk2, update_func="leakyrelu")
-        self.conv_2_to_3 = CCConvLayer(channels_rk2, channels_rk3, update_func="leakyrelu")
-        self.norm_1 = nn.LayerNorm(channels_rk1)
-        self.norm_2 = nn.LayerNorm(channels_rk2)
-        self.norm_3 = nn.LayerNorm(channels_rk3)
-        self.fc1 = nn.Linear(channels_rk3, hidden_dim1)
-        self.fc2 = nn.Linear(hidden_dim1, hidden_dim2)
-        self.fc3 = nn.Linear(hidden_dim2, out_channels)
+	def __init__(self,node_channels,channels_rk1,channels_rk2,channels_rk3, size_hidden_layer1, size_hidden_layer2,output_channels):
+		super().__init__()
 
-    def forward(self, x_0, incidence_0_1, incidence_1_2, incidence_2_3):
-        x_0 = x_0.to(torch.float32)
-        x_1 = self.norm_1(self.conv_0_to_1(x_0, incidence_0_1.T))
-        x_2 = self.norm_2(self.conv_1_to_2(x_1, incidence_1_2.T))
-        x_3 = self.norm_3(self.conv_2_to_3(x_2, incidence_2_3.T))
-        x = torch.flatten(x_3, start_dim=1)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
+		self.conv_0_to_1 = CCConvLayer(in_channels = node_channels, out_channels =  channels_rk1, update_func="relu")
+		self.conv_1_to_2 = CCConvLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
+		self.conv_2_to_3 = CCConvLayer(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
+
+		self.att_0_to_1 = CCAttLayer(in_channels = node_channels, out_channels =  channels_rk1, update_func="relu")
+		self.att_1_to_2 = CCAttLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
+		self.att_2_to_3 = CCAttLayer(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
+
+		self.fc1 = nn.Linear(channels_rk3,size_hidden_layer1)
+		self.fc2 = nn.Linear(size_hidden_layer1, size_hidden_layer2)
+		self.fc3 = nn.Linear(size_hidden_layer2,output_channels)
+
+	def forward(self,x_0,incidence_0_1,incidence_1_2,incidence_2_3):
+		x_0 = x_0.to(torch.float32)
+		#x_0 = x_0.view(28 * 28,1)
+		x_1_out = self.conv_0_to_1(x_0,incidence_0_1.T)
+		x_2_out = self.conv_1_to_2(x_1_out,incidence_1_2.T)
+		x_3_out = self.conv_2_to_3(x_2_out,incidence_2_3.T)
+
+		x_1_new = self.att_0_to_1(x_0,incidence_0_1.T, x_1_out)
+		x_2_new = self.att_1_to_2(x_1_new,incidence_1_2.T, x_2_out)
+		x_3_new = self.att_2_to_3(x_2_new,incidence_2_3.T, x_3_out)
+
+		x = torch.flatten(x_3_new, start_dim=1)
+		x = F.relu(self.fc1(x))
+		x = F.relu(self.fc2(x))
+		x = self.fc3(x)
+		return x
 
 
 # ── Collation helpers ─────────────────────────────────────────────────────────
@@ -105,7 +178,7 @@ def collate(batch):
 
 # ── Dataset ───────────────────────────────────────────────────────────────────
 
-dataset = Mol3d_CycleLifting(root="../../data/Molecule3D/raw", size=100000)
+dataset = Mol3d_CycleLifting(root="data/data/raw", size=100000)
 print(len(dataset))
 
 batch_size = 64
