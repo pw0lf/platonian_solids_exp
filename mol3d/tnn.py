@@ -125,7 +125,7 @@ class TNN(nn.Module):
 		self.att_1_to_2 = CCAttLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
 		self.att_2_to_3 = CCAttLayer(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
 
-		self.fc1 = nn.Linear(channels_rk3,size_hidden_layer1)
+		self.fc1 = nn.Linear(channels_rk3 * 2, size_hidden_layer1)
 		self.fc2 = nn.Linear(size_hidden_layer1, size_hidden_layer2)
 		self.fc3 = nn.Linear(size_hidden_layer2,output_channels)
 
@@ -140,8 +140,9 @@ class TNN(nn.Module):
 		x_2_new = self.att_1_to_2(x_1_new,incidence_1_2.T, x_2_out)
 		x_3_new = self.att_2_to_3(x_2_new,incidence_2_3.T, x_3_out)
 
+		
 
-		x = torch.flatten(x_3_new, start_dim=1)
+		x = torch.flatten(torch.cat([x_3_out, x_3_new], dim=-1), start_dim=1)
 		x = F.relu(self.fc1(x))
 		x = F.relu(self.fc2(x))
 		x = self.fc3(x)
@@ -195,7 +196,7 @@ print(device)
 model = TNN(4, 64, 128, 256, 128, 64, 1)
 print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
+#scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
 criterion = nn.MSELoss()
 model.to(device)
 
@@ -229,7 +230,7 @@ for epoch in range(20):
         output = model(x, icd_0_1, icd_1_2, icd_2_3).squeeze(-1)
         loss = criterion(output, hlgap.squeeze(-1))
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item()
         if collect_stats:
@@ -237,7 +238,7 @@ for epoch in range(20):
             all_targets.append(hlgap.cpu())
     epoch_time = time.time() - t0
     avg_loss = total_loss / len(train_dataloader)
-    scheduler.step(avg_loss)
+    #scheduler.step(avg_loss)
     print(f"Epoch {epoch + 1}, Loss: {avg_loss:.6f}, Time: {epoch_time:.2f}s")
 
     entry = {"epoch": epoch + 1, "train_loss": avg_loss, "epoch_time_s": epoch_time,
