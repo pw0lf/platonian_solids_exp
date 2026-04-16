@@ -15,6 +15,27 @@ def make_node_features(mol):
     positions = torch.tensor(list(map(lambda a: [a.x,a.y,a.z], positions)), dtype=torch.float32)
     return torch.cat([atomic_numbers, positions], dim=1)
 
+def make_node_features_new(mol):
+    feats = []
+    for atom in mol.GetAtoms():
+        feats.append([
+            atom.GetAtomicNum(),
+            atom.GetDegree(),
+            atom.GetFormalCharge(),
+            int(atom.GetIsAromatic()),
+            int(atom.IsInRing()),
+            atom.GetHybridization().real,   # sp=2, sp2=3, sp3=4
+            atom.GetTotalNumHs(),
+        ])
+    conf = mol.GetConformer()
+    positions = torch.tensor(
+        [[conf.GetAtomPosition(i).x,
+            conf.GetAtomPosition(i).y,
+            conf.GetAtomPosition(i).z] for i in range(mol.GetNumAtoms())],
+        dtype=torch.float32)
+    chem = torch.tensor(feats, dtype=torch.float32)
+    return torch.cat([chem, positions], dim=1)  # 10 features total
+
 def make_incidence_0_2(adj, n_nodes):
     G = nx.from_scipy_sparse_array(adj)
     rows = []
@@ -155,7 +176,80 @@ class Mol3d_CycleLifting(Dataset):
     
     def __getitem__(self, index):
         return self.node_feature[index], self.icd01[index],self.icd02[index],self.icd12[index],self.icd23[index], self.homolumogap[index]
+    
+class Mol3d_CycleLifting_morefeatures(Dataset):
+    def __init__(self, root=".", size=1000000):
+        super().__init__()
+        root = Path(root)
+        sdf_path = root / "combined_mols_1000000_to_2000000.sdf"
+        suppl = Chem.SDMolSupplier(str(sdf_path), sanitize=False)
+        properties_path = root / "properties.csv"
+        properties_df = pd.read_csv(properties_path)
+        self.homolumogap = []
+        self.node_feature = []
+        self.icd01 = []
+        self.icd02 = []
+        self.icd12 = []
+        self.icd23 = []
+        for i, mol in enumerate(suppl):
+            if size:
+                if i >= size:
+                    break
+            if mol is None:
+                continue
+            try:
+                Chem.SanitizeMol(mol)
+            except Exception:
+                continue
+            try:
+                icd01, icd02, icd12, icd23 = make_matrices(mol)
+            except (ValueError, RuntimeError):  # catch both just in case
+                #print("no rank 2 cells")
+                continue
+            self.icd01.append(icd01)
+            self.icd02.append(icd02)
+            self.icd12.append(icd12)
+            self.icd23.append(icd23)
+            self.node_feature.append(make_node_features(mol))
+            row = properties_df.iloc[i]
+            self.homolumogap.append(torch.tensor(row.homolumogap,dtype=torch.float32).unsqueeze(-1))
+    
+    def __len__(self):
+        return len(self.homolumogap)
+    
+    def __getitem__(self, index):
+        return self.node_feature[index], self.icd01[index],self.icd02[index],self.icd12[index],self.icd23[index], self.homolumogap[index]
 
+class Mol3d_KHopLifting(Dataset):
+    def __init__(self,root=".", size=1000000, k=3):
+        super().__init__()
+        root = Path(root)
+        sdf_path = root / "combined_mols_1000000_to_2000000.sdf"
+        suppl = Chem.SDMolSupplier(str(sdf_path), sanitize=False)
+        properties_path = root / "properties.csv"
+        properties_df = pd.read_csv(properties_path)
+        self.homolumogap = []
+        self.node_feature = []
+        self.icd01 = []
+        self.icd02 = []
+        self.icd12 = []
+        self.icd23 = []
+        for i, mol in enumerate(suppl):
+            if size:
+                if i >= size:
+                    break
+            if mol is None:
+                continue
+            try:
+                Chem.SanitizeMol(mol)
+            except Exception:
+                continue
+
+            #TODO: Make incidence matrices with k-Hop distance
+
+            self.node_feature.append(make_node_features(mol))
+            row = properties_df.iloc[i]
+            self.homolumogap.append(torch.tensor(row.homolumogap,dtype=torch.float32).unsqueeze(-1))
 
 def make_edge_index(mol):
     u = []

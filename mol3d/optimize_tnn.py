@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Subset, DataLoader
 
-from data_loader.mol3d import Mol3d_CycleLifting
+from data_loader.mol3d import Mol3d_CycleLifting, Mol3d_CycleLifting_morefeatures
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--path", required=True, help="Path to save results JSON")
@@ -229,7 +229,7 @@ def collate(batch):
 
 # ── Dataset ───────────────────────────────────────────────────────────────────
 
-dataset = Mol3d_CycleLifting(root="data/data/raw", size=100000)
+dataset = Mol3d_CycleLifting_morefeatures(root="data/data/raw", size=100000)
 print(len(dataset))
 
 batch_size = 64
@@ -247,7 +247,7 @@ print(device)
 
 # ── Model init ────────────────────────────────────────────────────────────────
 
-model = TNN(4, 64, 128, 256, 128, 64, 1)
+model = TNN(10, 64, 128, 256, 128, 64, 1)
 print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
