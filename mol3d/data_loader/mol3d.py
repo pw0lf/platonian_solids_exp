@@ -210,7 +210,7 @@ class Mol3d_CycleLifting_morefeatures(Dataset):
             self.icd02.append(icd02)
             self.icd12.append(icd12)
             self.icd23.append(icd23)
-            self.node_feature.append(make_node_features(mol))
+            self.node_feature.append(make_node_features_new(mol))
             row = properties_df.iloc[i]
             self.homolumogap.append(torch.tensor(row.homolumogap,dtype=torch.float32).unsqueeze(-1))
     
