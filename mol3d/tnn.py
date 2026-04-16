@@ -118,12 +118,12 @@ class TNN(nn.Module):
 		super().__init__()
 
 		self.conv_0_to_1 = CCConvLayer(in_channels = node_channels, out_channels =  channels_rk1, update_func="relu")
-		self.conv_1_to_2 = CCConvLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
-		self.conv_2_to_3 = CCConvLayer(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
+		#self.conv_1_to_2 = CCConvLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
+		self.conv_2_to_3 = CCConvLayer(in_channels = channels_rk1, out_channels = channels_rk3, update_func="relu")
 
 		self.att_0_to_1 = CCAttLayer(in_channels = node_channels, out_channels =  channels_rk1, update_func="relu")
-		self.att_1_to_2 = CCAttLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
-		self.att_2_to_3 = CCAttLayer(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
+		#self.att_1_to_2 = CCAttLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
+		self.att_2_to_3 = CCAttLayer(in_channels = channels_rk1, out_channels = channels_rk3, update_func="relu")
 
 		self.fc1 = nn.Linear(channels_rk3,size_hidden_layer1)
 		self.fc2 = nn.Linear(size_hidden_layer1, size_hidden_layer2)
