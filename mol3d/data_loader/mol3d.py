@@ -220,6 +220,79 @@ class Mol3d_CycleLifting_morefeatures(Dataset):
     def __getitem__(self, index):
         return self.node_feature[index], self.icd01[index],self.icd02[index],self.icd12[index],self.icd23[index], self.homolumogap[index]
 
+def make_node_features_atomicnum(mol):
+    """Atomic number only — shape (N_atoms, 1)."""
+    return torch.tensor([[a.GetAtomicNum()] for a in mol.GetAtoms()], dtype=torch.float32)
+
+
+def make_bond_features_dist(mol):
+    """Euclidean distance between bonded atoms — shape (N_bonds, 1).
+    Bond ordering matches icd01 (bond.GetIdx())."""
+    conf = mol.GetConformer()
+    pos = torch.tensor(
+        [[conf.GetAtomPosition(i).x,
+          conf.GetAtomPosition(i).y,
+          conf.GetAtomPosition(i).z] for i in range(mol.GetNumAtoms())],
+        dtype=torch.float32)
+    dists = []
+    for bond in mol.GetBonds():
+        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        dists.append([(pos[i] - pos[j]).norm().item()])
+    return torch.tensor(dists, dtype=torch.float32)
+
+
+class Mol3d_CycleLifting_distfeatures(Dataset):
+    """Node features: atomic number (1-dim).
+    Edge features: bond length / pairwise distance (1-dim).
+    __getitem__ returns (node_feat, edge_feat, icd01, icd02, icd12, icd23, homolumogap).
+    """
+    def __init__(self, root=".", size=1000000):
+        super().__init__()
+        root = Path(root)
+        sdf_path = root / "combined_mols_1000000_to_2000000.sdf"
+        suppl = Chem.SDMolSupplier(str(sdf_path), sanitize=False)
+        properties_path = root / "properties.csv"
+        properties_df = pd.read_csv(properties_path)
+        self.homolumogap = []
+        self.node_feature = []
+        self.edge_feature = []
+        self.icd01 = []
+        self.icd02 = []
+        self.icd12 = []
+        self.icd23 = []
+        for i, mol in enumerate(suppl):
+            if size:
+                if i >= size:
+                    break
+            if mol is None:
+                continue
+            try:
+                Chem.SanitizeMol(mol)
+            except Exception:
+                continue
+            try:
+                icd01, icd02, icd12, icd23 = make_matrices(mol)
+            except (ValueError, RuntimeError):
+                continue
+            self.icd01.append(icd01)
+            self.icd02.append(icd02)
+            self.icd12.append(icd12)
+            self.icd23.append(icd23)
+            self.node_feature.append(make_node_features_atomicnum(mol))
+            self.edge_feature.append(make_bond_features_dist(mol))
+            row = properties_df.iloc[i]
+            self.homolumogap.append(torch.tensor(row.homolumogap, dtype=torch.float32).unsqueeze(-1))
+
+    def __len__(self):
+        return len(self.homolumogap)
+
+    def __getitem__(self, index):
+        return (self.node_feature[index], self.edge_feature[index],
+                self.icd01[index], self.icd02[index],
+                self.icd12[index], self.icd23[index],
+                self.homolumogap[index])
+
+
 class Mol3d_KHopLifting(Dataset):
     def __init__(self,root=".", size=1000000, k=3):
         super().__init__()
