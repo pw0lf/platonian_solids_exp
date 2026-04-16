@@ -115,6 +115,7 @@ class TNN(nn.Module):
                  size_hidden_layer1, size_hidden_layer2, output_channels):
         super().__init__()
 
+        self.bond_proj   = nn.Linear(1, channels_rk1)
         self.conv_0_to_1 = CCConvLayer(node_channels, channels_rk1, update_func="relu")
         self.conv_1_to_2 = CCConvLayer(channels_rk1,  channels_rk2, update_func="relu")
         self.conv_2_to_3 = CCConvLayer(channels_rk2,  channels_rk3, update_func="relu")
@@ -129,12 +130,13 @@ class TNN(nn.Module):
 
     def forward(self, x_0, x_1 ,incidence_0_1, incidence_1_2, incidence_2_3):
         x_0 = x_0.to(torch.float32)
+        x_1 = x_1.to(torch.float32)
+        x_1_proj = self.bond_proj(x_1)             # (N_bonds, 1) → (N_bonds, channels_rk1)
 
-        #x_1_out = self.conv_0_to_1(x_0,     incidence_0_1.T)
-        x_2_out = self.conv_1_to_2(x_1,  incidence_1_2.T)
+        x_2_out = self.conv_1_to_2(x_1_proj, incidence_1_2.T)
         x_3_out = self.conv_2_to_3(x_2_out,  incidence_2_3.T)
 
-        x_1_new = self.att_0_to_1(x_0,     incidence_0_1.T, x_1)
+        x_1_new = self.att_0_to_1(x_0, incidence_0_1.T, x_1_proj)
         x_2_new = self.att_1_to_2(x_1_new,  incidence_1_2.T, x_2_out)
         x_3_new = self.att_2_to_3(x_2_new,  incidence_2_3.T, x_3_out)
 
@@ -220,7 +222,7 @@ print(device)
 
 # ── Model init ────────────────────────────────────────────────────────────────
 
-model = TNN(1, 1, 128, 256, 128, 64, 1)
+model = TNN(1, 64, 128, 256, 128, 64, 1)
 print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
@@ -228,19 +230,19 @@ criterion = nn.MSELoss()
 model.to(device)
 
 
-def run_model(x, icd_0_1, icd_1_2, icd_2_3, batch_rk0, n_mol):
-    return model(x, icd_0_1, icd_1_2, icd_2_3, batch_rk0, n_mol).squeeze(-1)
+def run_model(x, x_1, icd_0_1, icd_1_2, icd_2_3):
+    return model(x, x_1, icd_0_1, icd_1_2, icd_2_3).squeeze(-1)
 
 
 def eval_val():
     val_mae = 0.0
     model.eval()
     with torch.no_grad():
-        for x, icd_0_1, icd_1_2, icd_2_3, hlgap, batch_rk0, n_mol in val_dataloader:
-            x, icd_0_1, icd_1_2, icd_2_3, hlgap, batch_rk0 = (
-                x.to(device), icd_0_1.to(device), icd_1_2.to(device),
-                icd_2_3.to(device), hlgap.to(device), batch_rk0.to(device))
-            output = run_model(x, icd_0_1, icd_1_2, icd_2_3, batch_rk0, n_mol)
+        for x_0, x_1, icd_0_1, icd_1_2, icd_2_3, hlgap in val_dataloader:
+            x_0, x_1, icd_0_1, icd_1_2, icd_2_3, hlgap = (
+                x_0.to(device), x_1.to(device), icd_0_1.to(device),
+                icd_1_2.to(device), icd_2_3.to(device), hlgap.to(device))
+            output = run_model(x_0, x_1, icd_0_1, icd_1_2, icd_2_3)
             val_mae += (output - hlgap).abs().mean().item()
     val_mae /= len(val_dataloader)
     model.train()
@@ -307,7 +309,7 @@ for epoch in range(30):
 mae = 0.0
 model.eval()
 with torch.no_grad():
-    for x, x_1 ,icd_0_1, icd_1_2, icd_2_3, hlgap in train_dataloader:
+    for x, x_1 ,icd_0_1, icd_1_2, icd_2_3, hlgap in test_dataloader:
         x, x_1, icd_0_1, icd_1_2, icd_2_3, hlgap = (
             x.to(device), x_1.to(device), icd_0_1.to(device), icd_1_2.to(device),
             icd_2_3.to(device), hlgap.to(device))
