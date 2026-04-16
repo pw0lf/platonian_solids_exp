@@ -133,12 +133,12 @@ class TNN(nn.Module):
 		x_0 = x_0.to(torch.float32)
 		#x_0 = x_0.view(28 * 28,1)
 		x_1_out = self.conv_0_to_1(x_0,incidence_0_1.T)
-		x_2_out = self.conv_1_to_2(x_1_out,incidence_1_2.T)
-		x_3_out = self.conv_2_to_3(x_2_out,incidence_2_3.T)
+		#x_2_out = self.conv_1_to_2(x_1_out,incidence_1_2.T)
+		x_3_out = self.conv_2_to_3(x_1_out,incidence_2_3.T)
 
 		x_1_new = self.att_0_to_1(x_0,incidence_0_1.T, x_1_out)
-		x_2_new = self.att_1_to_2(x_1_new,incidence_1_2.T, x_2_out)
-		x_3_new = self.att_2_to_3(x_2_new,incidence_2_3.T, x_3_out)
+		#x_2_new = self.att_1_to_2(x_1_new,incidence_1_2.T, x_2_out)
+		x_3_new = self.att_2_to_3(x_1_new,incidence_2_3.T, x_3_out)
 
 		x = torch.flatten(x_3_new, start_dim=1)
 		x = F.relu(self.fc1(x))
