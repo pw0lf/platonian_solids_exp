@@ -193,7 +193,7 @@ print(device)
 
 model = TNN(4, 64, 128, 256, 128, 64, 1)
 print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 criterion = nn.MSELoss()
 model.to(device)
 
