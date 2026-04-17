@@ -293,7 +293,7 @@ class Mol3d_CycleLifting_distfeatures(Dataset):
                 self.homolumogap[index])
 
 def k_power(A,k):
-	P = A.clone()
+	P = A.copy()
 	for _ in range(2, k + 1):
 		P = P @ A
 	return P
