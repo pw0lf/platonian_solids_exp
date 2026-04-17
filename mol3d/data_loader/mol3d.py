@@ -343,7 +343,7 @@ def make_matrices_k_hop(mol,k):
     ).coalesce()
 
 
-    icd02_matrix = get_k_hop(A_torch, k)
+    icd02_matrix = get_k_hop(A_torch.to_dense(), k)
     icd12_matrix = make_12_icd(adj_rows,icd02_matrix)
     n_faces = icd02_matrix.shape[1]
 
