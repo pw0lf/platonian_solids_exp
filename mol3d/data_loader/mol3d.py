@@ -401,7 +401,7 @@ class Mol3d_KHopLifting(Dataset):
 
     def __getitem__(self, index):
         return (self.node_feature[index],
-                self.icd01[index], self.icd02[index], self.icd03[index].
+                self.icd01[index], self.icd02[index], self.icd03[index],
                 self.icd12[index], self.icd13[index] ,self.icd23[index],
                 self.homolumogap[index])
 
