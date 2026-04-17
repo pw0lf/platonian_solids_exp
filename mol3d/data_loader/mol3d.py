@@ -305,8 +305,6 @@ def get_k_hop(A,k):
 
 def make_12_icd(adj_rows, k_hop):
     res = torch.zeros((len(adj_rows)//2, k_hop.shape[1]))
-    print(len(adj_rows)//2)
-    print(len(adj_rows))
     for i in range(len(adj_rows)//2):
         res[i] = (k_hop[adj_rows[2*i]]) & (k_hop[adj_rows[2*i + 1]])
     return res
@@ -385,7 +383,14 @@ class Mol3d_KHopLifting(Dataset):
             except Exception:
                 continue
 
-            self.icd01, self.icd02, self.icd03 ,self.icd12, self.icd13, self.icd23 = make_matrices_k_hop(mol,k)
+            icd01, icd02, icd03, icd12, icd13, icd23 = make_matrices_k_hop(mol, k)
+
+            self.icd01.append(icd01)
+            self.icd02.append(icd02)
+            self.icd03.append(icd03)
+            self.icd12.append(icd12)
+            self.icd13.append(icd13)
+            self.icd23.append(icd23)
 
             self.node_feature.append(make_node_features(mol))
             row = properties_df.iloc[i]
