@@ -191,10 +191,9 @@ def sparse_block_diag(sparse_list):
 
 
 def collate(batch):
-    node_feat, edge_feat, icd01, icd02, icd12, icd23, homolumogap = zip(*batch)
+    node_feat, icd01, _,_, icd12,_, icd23, homolumogap = zip(*batch)
     return (
         torch.cat(node_feat, dim=0),   # x_0: atomic numbers
-        torch.cat(edge_feat, dim=0),   # x_1: bond distances
         sparse_block_diag(icd01),
         sparse_block_diag(icd12),
         sparse_block_diag(icd23),
