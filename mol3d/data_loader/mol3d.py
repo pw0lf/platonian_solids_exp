@@ -313,7 +313,7 @@ def make_icd_to_3(n_cells):
     row = torch.arange(n_cells)
     col = torch.zeros(n_cells, dtype=torch.long)
     idx = torch.stack([row, col], dim=0)  # [2, n_faces]
-    vals = torch.ones(n_cells, dtype=torch.int32)
+    vals = torch.ones(n_cells, dtype=torch.float32)
     return torch.sparse_coo_tensor(idx, vals, size=(n_cells, 1)).coalesce()
 
 def make_matrices_k_hop(mol,k):
