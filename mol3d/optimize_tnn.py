@@ -221,7 +221,7 @@ print(device)
 
 # ── Model init ────────────────────────────────────────────────────────────────
 
-model = TNN(1, 64, 128, 256, 128, 64, 1)
+model = TNN(4, 64, 128, 256, 128, 64, 1)
 print(f"Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-5)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
