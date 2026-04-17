@@ -292,6 +292,65 @@ class Mol3d_CycleLifting_distfeatures(Dataset):
                 self.icd12[index], self.icd23[index],
                 self.homolumogap[index])
 
+def k_power(A,k):
+	P = A.clone()
+	for _ in range(2, k + 1):
+		P = P @ A
+	return P
+
+def get_k_hop(A,k):
+	P = k_power(A,k)
+	P_bool = (P > 0).long()
+	return torch.unique(P_bool,dim=1)
+
+def make_12_icd(adj_rows, k_hop):
+    res = torch.zeros((len(adj_rows)/2, k_hop.shape[1]))
+    for i in range(len(adj_rows)/2):
+        res[i] = (k_hop[2*i]) & (k_hop[2*i + 1])
+    return res
+
+def make_icd_to_3(n_cells):
+    row = torch.arange(n_cells)
+    col = torch.zeros(n_cells, dtype=torch.long)
+    idx = torch.stack([row, col], dim=0)  # [2, n_faces]
+    vals = torch.ones(n_cells, dtype=torch.int32)
+    return torch.sparse_coo_tensor(idx, vals, size=(n_cells, 1)).coalesce()
+
+def make_matrices_k_hop(mol,k):
+    n_vertices = mol.GetNumAtoms()
+    n_edges = mol.GetNumBonds()
+    icd_rows = []
+    icd_cols = []
+    adj_rows = []
+    adj_cols = []
+    for bond in mol.GetBonds():
+        a = bond.GetBeginAtomIdx()
+        b = bond.GetEndAtomIdx()
+        l = bond.GetIdx()
+        icd_rows.extend([a,b])
+        icd_cols.extend([l,l])
+        adj_rows.extend([a,b])
+        adj_cols.extend([b,a])
+
+    icd_indices = torch.tensor([icd_rows, icd_cols], dtype=torch.long)
+    icd_values = torch.ones(icd_indices.shape[1],dtype=torch.float32)
+    icd01_matrix = torch.sparse_coo_tensor(icd_indices, icd_values, size=(n_vertices,n_edges)).coalesce()
+    adj_matrix = coo_matrix(
+        (np.ones(len(adj_cols)),(np.array(adj_rows,dtype=np.int64), np.array(adj_cols,dtype=np.int64))),
+        shape=(n_vertices,n_vertices)
+    )
+    icd02_matrix = get_k_hop(adj_matrix, k)
+    icd12_matrix = make_12_icd(adj_rows,icd02_matrix)
+    n_faces = icd02_matrix.shape[1]
+
+    icd03_matrix = make_icd_to_3(n_vertices)
+    icd13_matrix = make_icd_to_3(n_edges)
+    icd23_matrix = make_icd_to_3(n_faces)
+
+    return icd01_matrix, icd02_matrix, icd03_matrix ,icd12_matrix, icd13_matrix, icd23_matrix
+
+
+
 
 class Mol3d_KHopLifting(Dataset):
     def __init__(self,root=".", size=1000000, k=3):
@@ -305,7 +364,9 @@ class Mol3d_KHopLifting(Dataset):
         self.node_feature = []
         self.icd01 = []
         self.icd02 = []
+        self.icd03 = []
         self.icd12 = []
+        self.icd13 = []
         self.icd23 = []
         for i, mol in enumerate(suppl):
             if size:
@@ -318,11 +379,20 @@ class Mol3d_KHopLifting(Dataset):
             except Exception:
                 continue
 
-            #TODO: Make incidence matrices with k-Hop distance
+            self.icd01, self.icd02, self.icd03 ,self.icd12, self.icd13, self.icd23 = make_matrices_k_hop(mol,k)
 
             self.node_feature.append(make_node_features(mol))
             row = properties_df.iloc[i]
             self.homolumogap.append(torch.tensor(row.homolumogap,dtype=torch.float32).unsqueeze(-1))
+    
+    def __len__(self):
+        return len(self.homolumogap)
+
+    def __getitem__(self, index):
+        return (self.node_feature[index],
+                self.icd01[index], self.icd02[index], self.icd03[index].
+                self.icd12[index], self.icd13[index] ,self.icd23[index],
+                self.homolumogap[index])
 
 def make_edge_index(mol):
     u = []
