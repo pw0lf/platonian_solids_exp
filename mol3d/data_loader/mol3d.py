@@ -308,7 +308,7 @@ def make_12_icd(adj_rows, k_hop):
     print(len(adj_rows)//2)
     print(len(adj_rows))
     for i in range(len(adj_rows)//2):
-        res[i] = (k_hop[2*i]) & (k_hop[2*i + 1])
+        res[i] = (k_hop[adj_rows[2*i]]) & (k_hop[adj_rows[2*i + 1]])
     return res
 
 def make_icd_to_3(n_cells):
