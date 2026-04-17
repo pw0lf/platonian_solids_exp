@@ -237,7 +237,7 @@ def eval_val():
     val_mae = 0.0
     model.eval()
     with torch.no_grad():
-        for x_0, icd_0_1,_,_, icd_1_2,_, icd_2_3, hlgap in val_dataloader:
+        for x_0, icd_0_1,icd_1_2, icd_2_3, hlgap in val_dataloader:
             x_0, icd_0_1, icd_1_2, icd_2_3, hlgap = (
                 x_0.to(device), icd_0_1.to(device),
                 icd_1_2.to(device), icd_2_3.to(device), hlgap.to(device))
@@ -259,8 +259,8 @@ for epoch in range(30):
     model.train()
     t0 = time.time()
 
-    for x_0, icd_0_1,_,_, icd_1_2,_, icd_2_3, hlgap in train_dataloader:
-        x_0, icd_0_1,_,_, icd_1_2,_, icd_2_3, hlgap = (
+    for x_0, icd_0_1, icd_1_2, icd_2_3, hlgap in train_dataloader:
+        x_0, icd_0_1, icd_1_2,icd_2_3, hlgap = (
             x_0.to(device), icd_0_1.to(device), icd_1_2.to(device),
             icd_2_3.to(device), hlgap.to(device))
         optimizer.zero_grad()
@@ -308,8 +308,8 @@ for epoch in range(30):
 mae = 0.0
 model.eval()
 with torch.no_grad():
-    for x_0, icd_0_1,_,_, icd_1_2,_, icd_2_3, hlgap in test_dataloader:
-        x_0, icd_0_1,_,_, icd_1_2,_, icd_2_3, hlgap = (
+    for x_0, icd_0_1, icd_1_2, icd_2_3, hlgap in test_dataloader:
+        x_0, icd_0_1, icd_1_2, icd_2_3, hlgap = (
             x_0.to(device), icd_0_1.to(device), icd_1_2.to(device),
             icd_2_3.to(device), hlgap.to(device))
         output = run_model(x_0, icd_0_1, icd_1_2, icd_2_3)
