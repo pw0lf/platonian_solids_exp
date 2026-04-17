@@ -293,7 +293,7 @@ class Mol3d_CycleLifting_distfeatures(Dataset):
                 self.homolumogap[index])
 
 def k_power(A,k):
-	P = A.copy()
+	P = A.clone()
 	for _ in range(2, k + 1):
 		P = P @ A
 	return P
@@ -335,11 +335,15 @@ def make_matrices_k_hop(mol,k):
     icd_indices = torch.tensor([icd_rows, icd_cols], dtype=torch.long)
     icd_values = torch.ones(icd_indices.shape[1],dtype=torch.float32)
     icd01_matrix = torch.sparse_coo_tensor(icd_indices, icd_values, size=(n_vertices,n_edges)).coalesce()
-    adj_matrix = coo_matrix(
-        (np.ones(len(adj_cols)),(np.array(adj_rows,dtype=np.int64), np.array(adj_cols,dtype=np.int64))),
-        shape=(n_vertices,n_vertices)
-    )
-    icd02_matrix = get_k_hop(adj_matrix, k)
+
+    adj_indices = torch.tensor([adj_rows, adj_cols], dtype=torch.long)  # [2, nnz]
+    adj_values  = torch.ones(len(adj_rows), dtype=torch.float32)
+    A_torch = torch.sparse_coo_tensor(
+        adj_indices, adj_values, size=(n_vertices, n_vertices)
+    ).coalesce()
+
+
+    icd02_matrix = get_k_hop(A_torch, k)
     icd12_matrix = make_12_icd(adj_rows,icd02_matrix)
     n_faces = icd02_matrix.shape[1]
 
