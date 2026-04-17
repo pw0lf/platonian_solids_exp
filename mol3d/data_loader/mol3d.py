@@ -305,6 +305,8 @@ def get_k_hop(A,k):
 
 def make_12_icd(adj_rows, k_hop):
     res = torch.zeros((len(adj_rows)//2, k_hop.shape[1]))
+    print(len(adj_rows)//2)
+    print(len(adj_rows))
     for i in range(len(adj_rows)//2):
         res[i] = (k_hop[2*i]) & (k_hop[2*i + 1])
     return res
