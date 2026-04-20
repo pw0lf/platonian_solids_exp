@@ -13,5 +13,5 @@ module load lang/Python/3.10.4-GCCcore-11.3.0
 #========[ + + + + Job Steps + + + + ]========#
 source  ../venv/bin/activate
 export PYTHONUNBUFFERED=1
-srun python3 -u tnn.py --path=result_tnn3.json
+srun python3 -u new_tnn_architecture_khop.py --path=result_new_tnn.json
 deactivate
