@@ -132,10 +132,9 @@ class TNN(nn.Module):
         x_0_new = (self.att_1_to_0(x_1_new,icd01,x_0) + self.att_2_to_0(x_2_new, icd02, x_0) + x_0)/3
         x_1_new = (self.att_2_to_1(x_2_new, icd12, x_1_new) + x_1_new)/2
 
-        x_3 = (self.conv_0_to_3(x_0_new, icd03) + self.conv_1_to_3(x_1_new, icd13) + self.conv_2_to_3(x_2_new, icd23))/3
+        x_3 = (self.conv_0_to_3(x_0_new, icd03.T) + self.conv_1_to_3(x_1_new, icd13.T) + self.conv_2_to_3(x_2_new, icd23.T))/3
 
-        x_out = torch.flatten(x_3,start_dim=0)
-        x_out = F.relu(self.fc1(x_out))
+        x_out = F.relu(self.fc1(x_3))
         x_out = F.relu(self.fc2(x_out))
         x_out = self.fc3(x_out)
 
