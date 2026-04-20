@@ -145,22 +145,18 @@ class TNN(nn.Module):
 # ── Gradient diagnostics ──────────────────────────────────────────────────────
 
 def log_grad_norms(model):
-    groups = {"proj": [], "conv_W": [], "conv_bn": [], "att_Ws_Wt": [], "att_a": [], "att_bn": [], "fc": []}
+    groups = {"conv": [], "att_Ws_Wt": [], "att_a": [], "att_bn": [], "fc": []}
     for name, p in model.named_parameters():
         if p.grad is None:
             continue
         norm = p.grad.norm().item()
-        if name.startswith("proj"):
-            groups["proj"].append(norm)
-        elif "conv" in name and "bn" in name:
-            groups["conv_bn"].append(norm)
-        elif "conv" in name:
-            groups["conv_W"].append(norm)
+        if "conv" in name and "bn" not in name:
+            groups["conv"].append(norm)
         elif "att" in name and ("Ws" in name or "Wt" in name):
             groups["att_Ws_Wt"].append(norm)
         elif "att" in name and ("a_s" in name or "a_t" in name):
             groups["att_a"].append(norm)
-        elif "att" in name and "bn" in name:
+        elif "bn" in name:
             groups["att_bn"].append(norm)
         elif "fc" in name:
             groups["fc"].append(norm)
@@ -311,7 +307,7 @@ with torch.no_grad():
         x_0, icd_0_1, icd_0_2, icd_0_3, icd_1_2, icd_1_3,icd_2_3, hlgap = (
                 x_0.to(device), icd_0_1.to(device), icd_0_2.to(device), icd_0_3.to(device),
                 icd_1_2.to(device),icd_1_3.to(device), icd_2_3.to(device), hlgap.to(device))
-        output = run_model(x_0, icd_0_1, icd_0_2, icd_0_3, icd_1_2, icd_1_3 ,icd_2_3)
+        output = run_model(x_0, icd_0_1, icd_0_2, icd_0_3, icd_1_2, icd_1_3 ,icd_2_3) 
         mae += (output.squeeze(-1) - hlgap).abs().mean().item()
 mae /= len(test_dataloader)
 print(f"Test MAE: {mae}")
