@@ -15,6 +15,13 @@ def make_node_features(mol):
     positions = torch.tensor(list(map(lambda a: [a.x,a.y,a.z], positions)), dtype=torch.float32)
     return torch.cat([atomic_numbers, positions], dim=1)
 
+def make_icd_to_3(n_cells):
+    row = torch.arange(n_cells)
+    col = torch.zeros(n_cells, dtype=torch.long)
+    idx = torch.stack([row, col], dim=0)  # [2, n_faces]
+    vals = torch.ones(n_cells, dtype=torch.float32)
+    return torch.sparse_coo_tensor(idx, vals, size=(n_cells, 1)).coalesce()
+
 def make_node_features_new(mol):
     feats = []
     for atom in mol.GetAtoms():
@@ -131,8 +138,12 @@ def make_matrices(mol):
         raise ValueError("No rank 2 cells")
     else:
         icd12_matrix = normalize_incidence_col(icd12_matrix)
-    icd23_matrix = normalize_incidence_col(make_incidence_2_3(icd12_matrix))
-    return icd01_matrix, icd02_matrix, icd12_matrix, icd23_matrix
+
+    n_faces = icd02_matrix.shape[1]
+    icd03_matrix = make_icd_to_3(n_vertices)
+    icd13_matrix = make_icd_to_3(n_edges)
+    icd23_matrix = make_icd_to_3(n_faces)
+    return icd01_matrix, icd02_matrix,icd03_matrix, icd12_matrix,icd13_matrix, icd23_matrix
 
 class Mol3d_CycleLifting(Dataset):
     def __init__(self, root=".", size=1000000):
@@ -146,7 +157,9 @@ class Mol3d_CycleLifting(Dataset):
         self.node_feature = []
         self.icd01 = []
         self.icd02 = []
+        self.icd03 = []
         self.icd12 = []
+        self.icd13 = []
         self.icd23 = []
         for i, mol in enumerate(suppl):
             if size:
@@ -159,13 +172,15 @@ class Mol3d_CycleLifting(Dataset):
             except Exception:
                 continue
             try:
-                icd01, icd02, icd12, icd23 = make_matrices(mol)
+                icd01, icd02, icd03, icd12, icd13, icd23 = make_matrices(mol)
             except (ValueError, RuntimeError):  # catch both just in case
                 #print("no rank 2 cells")
                 continue
             self.icd01.append(icd01)
             self.icd02.append(icd02)
+            self.icd03.append(icd03)
             self.icd12.append(icd12)
+            self.icd13.append(icd13)
             self.icd23.append(icd23)
             self.node_feature.append(make_node_features(mol))
             row = properties_df.iloc[i]
@@ -175,7 +190,10 @@ class Mol3d_CycleLifting(Dataset):
         return len(self.homolumogap)
     
     def __getitem__(self, index):
-        return self.node_feature[index], self.icd01[index],self.icd02[index],self.icd12[index],self.icd23[index], self.homolumogap[index]
+        return (self.node_feature[index],
+                self.icd01[index], self.icd02[index], self.icd03[index],
+                self.icd12[index], self.icd13[index] ,self.icd23[index],
+                self.homolumogap[index])
     
 class Mol3d_CycleLifting_morefeatures(Dataset):
     def __init__(self, root=".", size=1000000):
@@ -308,13 +326,6 @@ def make_12_icd(adj_rows, k_hop):
     for i in range(len(adj_rows)//2):
         res[i] = (k_hop[adj_rows[2*i]]) & (k_hop[adj_rows[2*i + 1]])
     return res
-
-def make_icd_to_3(n_cells):
-    row = torch.arange(n_cells)
-    col = torch.zeros(n_cells, dtype=torch.long)
-    idx = torch.stack([row, col], dim=0)  # [2, n_faces]
-    vals = torch.ones(n_cells, dtype=torch.float32)
-    return torch.sparse_coo_tensor(idx, vals, size=(n_cells, 1)).coalesce()
 
 def make_matrices_k_hop(mol,k):
     n_vertices = mol.GetNumAtoms()
@@ -451,3 +462,240 @@ class Mol3d_PyG(Dataset):
         #return self.node_feature[index], self.edge_index[index], self.homolumogap[index]
         return Data(node_features= self.node_feature[index], edge_index = self.edge_index[index],homolumogap = self.homolumogap[index])
             
+def knn_torch(points: torch.Tensor, k: int, batch_size: int = 4096):
+    """
+    points: (N, 3) tensor on CUDA/MPS
+    returns: (dists, idx) both (N, k)
+    """
+    N = points.shape[0]
+    k_eff = min(k, N - 1)
+    dists_out = torch.empty(N, k_eff, device=points.device)
+    idx_out   = torch.empty(N, k_eff, dtype=torch.long, device=points.device)
+
+    for i in range(0, N, batch_size):
+        chunk = points[i:i+batch_size]                    # (B, 3)
+        d = torch.cdist(chunk, points)                    # (B, N)
+        # k+1 because the nearest is the point itself
+        dk, ik = torch.topk(d, k_eff + 1, dim=1, largest=False)
+        dists_out[i:i+batch_size] = dk[:, 1:]
+        idx_out[i:i+batch_size]   = ik[:, 1:]
+    return dists_out, idx_out
+
+def knn_lifting(idx_out):
+    N = idx_out.shape[0]
+    k = idx_out.shape[1]
+    cols = torch.arange(N).repeat_interleave(k)
+    rows = idx_out.reshape(-1)
+    indices = torch.stack([rows,cols], dim=0)
+    values = torch.ones(N*k)
+    matrix = torch.sparse_coo_tensor(indices,values, (N,N)).coalesce()
+    return torch.unique(matrix.to_dense(),dim=1)
+
+def make_12_icd_knn(adj_rows, icd02):
+    icd02 = icd02.bool()
+    res = torch.zeros((len(adj_rows)//2, icd02.shape[1]))
+    for i in range(len(adj_rows)//2):
+        res[i] = (icd02[adj_rows[2*i]]) & (icd02[adj_rows[2*i + 1]])
+    return res
+
+def make_matrices_knn(mol,k, node_features):
+    n_vertices = mol.GetNumAtoms()
+    n_edges = mol.GetNumBonds()
+    icd_rows = []
+    icd_cols = []
+    adj_rows = []
+    adj_cols = []
+    for bond in mol.GetBonds():
+        a = bond.GetBeginAtomIdx()
+        b = bond.GetEndAtomIdx()
+        l = bond.GetIdx()
+        icd_rows.extend([a,b])
+        icd_cols.extend([l,l])
+        adj_rows.extend([a,b])
+        adj_cols.extend([b,a])
+
+    icd_indices = torch.tensor([icd_rows, icd_cols], dtype=torch.long)
+    icd_values = torch.ones(icd_indices.shape[1],dtype=torch.float32)
+    icd01_matrix = torch.sparse_coo_tensor(icd_indices, icd_values, size=(n_vertices,n_edges)).coalesce()
+
+    _, idx_out = knn_torch(node_features[:, 1:],k)
+    icd02_matrix = knn_lifting(idx_out)
+
+    icd12_matrix = make_12_icd_knn(adj_rows,icd02_matrix).to_sparse_coo().coalesce()
+    icd02_matrix = icd02_matrix.to_sparse_coo().coalesce()
+    n_faces = icd02_matrix.shape[1]
+
+    icd03_matrix = make_icd_to_3(n_vertices)
+    icd13_matrix = make_icd_to_3(n_edges)
+    icd23_matrix = make_icd_to_3(n_faces)
+
+    return icd01_matrix, icd02_matrix, icd03_matrix ,icd12_matrix, icd13_matrix, icd23_matrix
+
+
+class Mol3d_KNNLifting(Dataset):
+    def __init__(self,root=".", size=1000000, k=3):
+        super().__init__()
+        root = Path(root)
+        sdf_path = root / "combined_mols_1000000_to_2000000.sdf"
+        suppl = Chem.SDMolSupplier(str(sdf_path), sanitize=False)
+        properties_path = root / "properties.csv"
+        properties_df = pd.read_csv(properties_path)
+        self.homolumogap = []
+        self.node_feature = []
+        self.icd01 = []
+        self.icd02 = []
+        self.icd03 = []
+        self.icd12 = []
+        self.icd13 = []
+        self.icd23 = []
+        for i, mol in enumerate(suppl):
+            if size:
+                if i >= size:
+                    break
+            if mol is None:
+                continue
+            try:
+                Chem.SanitizeMol(mol)
+            except Exception:
+                continue
+
+            node_features = make_node_features(mol)
+            self.node_feature.append(node_features)
+
+            icd01, icd02, icd03, icd12, icd13, icd23 = make_matrices_knn(mol,k, node_features)
+
+            self.icd01.append(icd01)
+            self.icd02.append(icd02)
+            self.icd03.append(icd03)
+            self.icd12.append(icd12)
+            self.icd13.append(icd13)
+            self.icd23.append(icd23)
+
+            row = properties_df.iloc[i]
+            self.homolumogap.append(torch.tensor(row.homolumogap,dtype=torch.float32).unsqueeze(-1))
+    
+    def __len__(self):
+        return len(self.homolumogap)
+
+    def __getitem__(self, index):
+        return (self.node_feature[index],
+                self.icd01[index], self.icd02[index], self.icd03[index],
+                self.icd12[index], self.icd13[index] ,self.icd23[index],
+                self.homolumogap[index])
+
+
+def graph_heat_kernel(laplacian: torch.Tensor, t: float = 1.0) -> torch.Tensor:
+    return torch.linalg.matrix_exp(-t * laplacian)
+
+def get_laplacian(A):
+    deg = A.sum(dim=1)
+    d_inv_sqrt = deg.pow(-0.5)
+    d_inv_sqrt[torch.isinf(d_inv_sqrt)] = 0.0
+    L_sym = torch.eye(A.size(0), device=A.device) - (d_inv_sqrt[:, None] * A * d_inv_sqrt[None, :])
+    return L_sym
+
+from sklearn.metrics.pairwise import rbf_kernel
+
+def kernel_lifting(A,X,fraction):
+    laplacian = get_laplacian(A)
+
+    K_v = graph_heat_kernel(laplacian)
+    K_x = rbf_kernel(X,X)
+
+    K = K_v + K_x
+
+    threshold = torch.quantile(K, 1 - fraction)
+    return torch.unique(K >= threshold, dim=1)
+
+def make_matrices_kernel(mol, node_features):
+    n_vertices = mol.GetNumAtoms()
+    n_edges = mol.GetNumBonds()
+    icd_rows = []
+    icd_cols = []
+    adj_rows = []
+    adj_cols = []
+    for bond in mol.GetBonds():
+        a = bond.GetBeginAtomIdx()
+        b = bond.GetEndAtomIdx()
+        l = bond.GetIdx()
+        icd_rows.extend([a,b])
+        icd_cols.extend([l,l])
+        adj_rows.extend([a,b])
+        adj_cols.extend([b,a])
+
+    icd_indices = torch.tensor([icd_rows, icd_cols], dtype=torch.long)
+    icd_values = torch.ones(icd_indices.shape[1],dtype=torch.float32)
+    icd01_matrix = torch.sparse_coo_tensor(icd_indices, icd_values, size=(n_vertices,n_edges)).coalesce()
+
+    adj_indices = torch.tensor([adj_rows, adj_cols], dtype=torch.long)  # [2, nnz]
+    adj_values  = torch.ones(len(adj_rows), dtype=torch.float32)
+    A_torch = torch.sparse_coo_tensor(
+        adj_indices, adj_values, size=(n_vertices, n_vertices)
+    ).coalesce()
+
+    icd02_matrix = kernel_lifting(A_torch.to_dense(),node_features,0.5)
+
+    icd12_matrix = make_12_icd_knn(adj_rows,icd02_matrix).to_sparse_coo().coalesce()
+    icd02_matrix = icd02_matrix.to_sparse_coo().coalesce()
+    n_faces = icd02_matrix.shape[1]
+
+    icd03_matrix = make_icd_to_3(n_vertices)
+    icd13_matrix = make_icd_to_3(n_edges)
+    icd23_matrix = make_icd_to_3(n_faces)
+
+    return icd01_matrix, icd02_matrix, icd03_matrix ,icd12_matrix, icd13_matrix, icd23_matrix
+
+
+
+
+
+class Mol3d_KernelLifting(Dataset):
+    def __init__(self,root=".", size=1000000):
+        super().__init__()
+        root = Path(root)
+        sdf_path = root / "combined_mols_1000000_to_2000000.sdf"
+        suppl = Chem.SDMolSupplier(str(sdf_path), sanitize=False)
+        properties_path = root / "properties.csv"
+        properties_df = pd.read_csv(properties_path)
+        self.homolumogap = []
+        self.node_feature = []
+        self.icd01 = []
+        self.icd02 = []
+        self.icd03 = []
+        self.icd12 = []
+        self.icd13 = []
+        self.icd23 = []
+        for i, mol in enumerate(suppl):
+            if size:
+                if i >= size:
+                    break
+            if mol is None:
+                continue
+            try:
+                Chem.SanitizeMol(mol)
+            except Exception:
+                continue
+
+            node_features = make_node_features(mol)
+            self.node_feature.append(node_features)
+
+            icd01, icd02, icd03, icd12, icd13, icd23 = make_matrices_kernel(mol, node_features)
+
+            self.icd01.append(icd01)
+            self.icd02.append(icd02)
+            self.icd03.append(icd03)
+            self.icd12.append(icd12)
+            self.icd13.append(icd13)
+            self.icd23.append(icd23)
+
+            row = properties_df.iloc[i]
+            self.homolumogap.append(torch.tensor(row.homolumogap,dtype=torch.float32).unsqueeze(-1))
+    
+    def __len__(self):
+        return len(self.homolumogap)
+
+    def __getitem__(self, index):
+        return (self.node_feature[index],
+                self.icd01[index], self.icd02[index], self.icd03[index],
+                self.icd12[index], self.icd13[index] ,self.icd23[index],
+                self.homolumogap[index])
