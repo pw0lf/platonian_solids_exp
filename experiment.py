@@ -524,10 +524,12 @@ class TNN(nn.Module):
 		self.to(device)
 		optimizer = optim.AdamW(self.parameters(),lr=self.lr)
 		criterion = nn.CrossEntropyLoss()
-		
+
 		losses = []
 		self.train()
 		start = time.perf_counter()
+		stuck_count = 0
+		stuck = False
 		for epoch in range(self.epochs):
 			total_loss = 0
 			for V, VF, VE, EF, FC,label,_ in train_loader:
@@ -543,12 +545,21 @@ class TNN(nn.Module):
 				loss.backward()
 				optimizer.step()
 				total_loss += loss.item()
-			losses.append(total_loss/len(train_loader))
-			print(f"Epoch: {epoch+1}, Loss: {total_loss/len(train_loader)}")
+			avg_loss = total_loss/len(train_loader)
+			losses.append(avg_loss)
+			print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+			if abs(avg_loss - STUCK_LOSS) < STUCK_EPS:
+				stuck_count += 1
+				if stuck_count >= STUCK_PATIENCE:
+					print(f"Early stopping: loss stuck at {avg_loss:.4f}")
+					stuck = True
+					break
+			else:
+				stuck_count = 0
 		end = time.perf_counter()
 		print(f"Training time: {end-start} seconds")
-				
-		return losses, end-start, (end-start)/self.epochs
+
+		return losses, end-start, (end-start)/len(losses), stuck
 		
 	def	test(self, test_loader,device="cpu"):
 		self.to(device)
@@ -604,6 +615,8 @@ class GCN(torch.nn.Module):
         losses = []
         self.train()
         start = time.perf_counter()
+        stuck_count = 0
+        stuck = False
         for epoch in range(self.epochs):
             total_loss = 0
             for data in train_loader:
@@ -614,12 +627,21 @@ class GCN(torch.nn.Module):
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
-            losses.append(total_loss/len(train_loader))
-            print(f"Epoch: {epoch+1}, Loss: {total_loss/len(train_loader)}")
+            avg_loss = total_loss/len(train_loader)
+            losses.append(avg_loss)
+            print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+            if abs(avg_loss - STUCK_LOSS) < STUCK_EPS:
+                stuck_count += 1
+                if stuck_count >= STUCK_PATIENCE:
+                    print(f"Early stopping: loss stuck at {avg_loss:.4f}")
+                    stuck = True
+                    break
+            else:
+                stuck_count = 0
         end = time.perf_counter()
         print(f"Training time: {end-start} seconds")
-        
-        return losses, end-start, (end-start)/self.epochs
+
+        return losses, end-start, (end-start)/len(losses), stuck
 
     def test(self, test_loader, device="cpu"):
         self.to(device)
@@ -635,7 +657,7 @@ class GCN(torch.nn.Module):
                 total += data.y.size(0)
             accuracy = 100. * correct/total
             print(f"Test accuracy: {accuracy:.2f}%")
-        
+
         return accuracy
 
 ################# GAN #################
@@ -670,6 +692,8 @@ class GAN(nn.Module):
         losses = []
         self.train()
         start = time.perf_counter()
+        stuck_count = 0
+        stuck = False
         for epoch in range(self.epochs):
             total_loss = 0
             for data in train_loader:
@@ -680,11 +704,21 @@ class GAN(nn.Module):
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
-            losses.append(total_loss/len(train_loader))
-            print(f"Epoch: {epoch+1}, Loss: {total_loss/len(train_loader)}")
+            avg_loss = total_loss/len(train_loader)
+            losses.append(avg_loss)
+            print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+            if abs(avg_loss - STUCK_LOSS) < STUCK_EPS:
+                stuck_count += 1
+                if stuck_count >= STUCK_PATIENCE:
+                    print(f"Early stopping: loss stuck at {avg_loss:.4f}")
+                    stuck = True
+                    break
+            else:
+                stuck_count = 0
         end = time.perf_counter()
         print(f"Training time: {end-start} seconds")
-        return losses, end-start, (end-start)/self.epochs
+
+        return losses, end-start, (end-start)/len(losses), stuck
 
     def test(self, test_loader, device="cpu"):
         self.to(device)
@@ -700,7 +734,7 @@ class GAN(nn.Module):
                 total += data.y.size(0)
             accuracy = 100. * correct/total
             print(f"Test accuracy: {accuracy:.2f}%")
-        
+
         return accuracy
 
 ################# GIN #################
@@ -765,6 +799,8 @@ class GIN(torch.nn.Module):
         losses = []
         self.train()
         start = time.perf_counter()
+        stuck_count = 0
+        stuck = False
         for epoch in range(self.epochs):
             total_loss = 0
             for data in train_loader:
@@ -775,12 +811,21 @@ class GIN(torch.nn.Module):
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item()
-            losses.append(total_loss/len(train_loader))
-            print(f"Epoch: {epoch+1}, Loss: {total_loss/len(train_loader)}")
+            avg_loss = total_loss/len(train_loader)
+            losses.append(avg_loss)
+            print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+            if abs(avg_loss - STUCK_LOSS) < STUCK_EPS:
+                stuck_count += 1
+                if stuck_count >= STUCK_PATIENCE:
+                    print(f"Early stopping: loss stuck at {avg_loss:.4f}")
+                    stuck = True
+                    break
+            else:
+                stuck_count = 0
         end = time.perf_counter()
         print(f"Training time: {end-start} seconds")
-        
-        return losses, end-start, (end-start)/self.epochs
+
+        return losses, end-start, (end-start)/len(losses), stuck
 
     def test(self, test_loader, device="cpu"):
         self.to(device)
@@ -796,8 +841,12 @@ class GIN(torch.nn.Module):
                 total += data.y.size(0)
             accuracy = 100. * correct/total
             print(f"Test accuracy: {accuracy:.2f}%")
-        
+
         return accuracy
+
+STUCK_LOSS = np.log(5)  # ≈ 1.6094 — uniform random loss for 5 classes
+STUCK_EPS = 0.005
+STUCK_PATIENCE = 3
 
 ################# HP-Tuning #################
 def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_seed, device="cpu"):
@@ -834,10 +883,12 @@ def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_s
         accuracies = []
         for i in range(runs_per_hp_comb):
             cur_model = model(**hp_trial_dict,**fixed_params)
-            cur_model.fit(train_loader,device=device)
+            _, _, _, stuck = cur_model.fit(train_loader,device=device)
+            if stuck:
+                raise optuna.exceptions.TrialPruned()
             acc = cur_model.test(test_loader,device=device)
             accuracies.append(acc)
-        
+
         return np.max(accuracies)
     
     study = optuna.create_study(direction="maximize")
@@ -894,9 +945,7 @@ if __name__ == "__main__":
     epsf = [0.01,0.1,0.2,0.3]
 
     results = {}
-    runs_per_data_params = 5
     for m,e in product(mnoev, epsf):
-        results[f"{m}_{e}"] = {}
         if args.model=="TNN":
             dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},m,e)
             train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
@@ -910,16 +959,16 @@ if __name__ == "__main__":
             data_list = build_dataset({name: 100 for name in SOLID_TYPES},m,e)
             test_loader = DataLoader(data_list, batch_size=32, shuffle=True)
 
-        accuracies = []
-        for i in range(runs_per_data_params):
+        for restart in range(4):  # initial attempt + up to 3 restarts
             cur_model = model(**best_hps)
-            losses, total_time, time_per_epoch = cur_model.fit(train_loader, device=DEVICE)
-            accs = cur_model.test(test_loader, device=DEVICE)
-            accuracies.append(accs)
+            losses, total_time, time_per_epoch, stuck = cur_model.fit(train_loader, device=DEVICE)
+            if not stuck:
+                break
+            if restart < 3:
+                print(f"Loss stuck, restarting (attempt {restart + 2}/4)...")
+        accs = cur_model.test(test_loader, device=DEVICE)
 
-            results[f"{m}_{e}"][f"run_{i+1}"] = {"losses":losses,"accuracy":accs,"total_time":total_time,"time_per_epoch":time_per_epoch}
-        
-        results[f"{m}_{e}"]["results"] = {"best_acc": float(np.max(accuracies)),"best_run": int(np.argmax(accuracies)) + 1, "best_hps":best_hps}
+        results[f"{m}_{e}"] = {"losses":losses,"accuracy":accs,"total_time":total_time,"time_per_epoch":time_per_epoch,"restarts":restart,"best_hps":best_hps}
         with open(f"{path}/results.json","w") as f:
             json.dump(results,f, indent=2, sort_keys=True)
 
