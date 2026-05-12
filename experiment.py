@@ -28,7 +28,8 @@ import time
 from typing import Literal
 
 from torch_geometric.data import Data, Batch
-from torch_geometric.loader import DataLoader
+from torch_geometric.loader import DataLoader as PyGDataLoader
+from torch.utils.data import DataLoader
 
 ################# Making of dataset #################
 def scale_to_volume(mesh, target_volume):
@@ -247,9 +248,9 @@ def noisy_dodecahedron(target_volume,num_of_extra_vertices, eps_factor):
     return dodeca
 
 def make_matrices(mesh):
-    V = torch.from_numpy(mesh.vertices)        # (n_vertices, 3), float
-    F = torch.from_numpy(mesh.faces).long()    # (n_faces, 3), long
-    E = torch.from_numpy(mesh.edges_unique).long()  # (n_edges, 2), long
+    V = torch.from_numpy(mesh.vertices.copy()).float()
+    F = torch.from_numpy(mesh.faces.copy()).long()
+    E = torch.from_numpy(mesh.edges_unique.copy()).long()
 
     n_vertices = V.shape[0]
     n_faces    = F.shape[0]
@@ -453,124 +454,256 @@ def build_dataset(num_per_type, num_of_extra_vertices, eps_factor):
 
 ################# TNN #################
 class CCConvLayer(nn.Module):
-	def __init__(
-		self,
-		in_channels,
-		out_channels,
-		aggr_norm: bool = False,
-		att: bool = False,
-		initialization: Literal["xavier_uniform"] = "xavier_uniform",
-		initialzation_gain: float = 1.414,
-		update_func: Literal["sigmoid","relu",None] = None
-	):
-		super().__init__()
-		self.in_channels = in_channels
-		self.out_channels = out_channels
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        aggr_norm: bool = False,
+        att: bool = False,
+        initialization: Literal["xavier_uniform"] = "xavier_uniform",
+        initialzation_gain: float = 1.414,
+        update_func: Literal["sigmoid","relu",None] = None
+    ):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
-		self.aggr_norm = aggr_norm
-		self.att = att
-		self.initialization = initialization
-		self.initialization_gain = initialzation_gain
-		self.update_func = update_func
+        self.aggr_norm = aggr_norm
+        self.att = att
+        self.initialization = initialization
+        self.initialization_gain = initialzation_gain
+        self.update_func = update_func
 
-		self.init_parameters()
-	
-	def init_parameters(self):
-		self.W = nn.Parameter(torch.empty(self.out_channels,self.in_channels, dtype=torch.float32))
-		nn.init.xavier_uniform_(self.W)
+        self.init_parameters()
+    
+    def init_parameters(self):
+        self.W = nn.Parameter(torch.empty(self.out_channels,self.in_channels, dtype=torch.float32))
+        nn.init.xavier_uniform_(self.W)
 
-	def update(self,x):
-		match self.update_func:
-			case "sigmoid":
-				return torch.sigmoid(x)
-			case "relu":
-				return torch.nn.functional.relu(x)
-			case _:
-				return x
+    def update(self,x):
+        match self.update_func:
+            case "sigmoid":
+                return torch.sigmoid(x)
+            case "relu":
+                return torch.nn.functional.relu(x)
+            case _:
+                return x
 
-	def forward(self,x,neighborhood):
-		x_1 = x @ self.W.T
-		x_2 = neighborhood @ x_1 
-		x_3 = self.update(x_2)
-		return x_3
-	
+    def forward(self,x,neighborhood):
+        x_1 = x @ self.W.T
+        x_2 = neighborhood @ x_1 
+        x_3 = self.update(x_2)
+        return x_3
+     
+class CCAttLayer(nn.Module):
+    def __init__(self, in_channels, out_channels,update_func: Literal["sigmoid", "relu", "leakyrelu", None] = None):
+        super().__init__()
+        self.in_channels  = in_channels
+        self.out_channels = out_channels
+        self.update_func  = update_func
+
+        self.Ws  = nn.Parameter(torch.empty(out_channels, in_channels,  dtype=torch.float32))
+        self.Wt  = nn.Parameter(torch.empty(in_channels,  out_channels, dtype=torch.float32))
+        self.a_s = nn.Parameter(torch.empty(out_channels, dtype=torch.float32))
+        self.a_t = nn.Parameter(torch.empty(in_channels,  dtype=torch.float32))
+
+        nn.init.xavier_uniform_(self.Ws)
+        nn.init.xavier_uniform_(self.Wt)
+        nn.init.normal_(self.a_s, std=0.1)
+        nn.init.normal_(self.a_t, std=0.1)
+
+    def _activate(self, x):
+        match self.update_func:
+            case "sigmoid":   return torch.sigmoid(x)
+            case "relu":      return F.relu(x)
+            case "leakyrelu": return F.leaky_relu(x)
+            case _:           return x
+
+    def forward(self, x, neighborhood, x_target):
+        neighborhood = neighborhood.coalesce()
+        Z_s = x        @ self.Ws.T   # (N_src, out_ch)
+        Z_t = x_target @ self.Wt.T   # (N_tgt, in_ch)
+
+        rows, cols = neighborhood.indices()   # rows=tgt, cols=src
+        e = (Z_s[cols] @ self.a_s) + (Z_t[rows] @ self.a_t)
+        e = F.leaky_relu(e, negative_slope=0.2)
+
+        e_max = torch.zeros(x_target.shape[0], device=x.device)
+        e_max.scatter_reduce_(0, rows, e, reduce='amax', include_self=True)
+        e_exp = torch.exp(e - e_max[rows])
+        e_sum = torch.zeros(x_target.shape[0], device=x.device)
+        e_sum.scatter_add_(0, rows, e_exp)
+        att = e_exp / (e_sum[rows] + 1e-8)
+
+        weighted = att.unsqueeze(1) * Z_s[cols]
+        out = torch.zeros(x_target.shape[0], Z_s.shape[1], device=x.device)
+        out.scatter_add_(0, rows.unsqueeze(1).expand_as(weighted), weighted)
+        return self._activate(out)
+    
+class TNN_Att(nn.Module):
+    def __init__(self,node_channels,channels_rk1,channels_rk2,channels_rk3, size_hidden_layer,lr, epochs):
+        super().__init__()
+
+        self.lr = lr
+        self.epochs = epochs
+
+        self.conv_0_to_1 = CCConvLayer(in_channels = node_channels, out_channels =  channels_rk1, update_func="relu")
+        self.conv_1_to_2 = CCConvLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
+        self.conv_2_to_3 = CCConvLayer(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
+        
+        self.att_0_to_1 = CCAttLayer(node_channels, channels_rk1, update_func="relu")
+        self.att_1_to_2 = CCAttLayer(channels_rk1,  channels_rk2, update_func="relu")
+        self.att_2_to_3 = CCAttLayer(channels_rk2, channels_rk3, update_func="relu")
+
+        # Add later 0 -> 2
+        #self.conv_0_to_2 = Conv(in_channels = node_channels, out_channels =  channels_rk2, update_func="relu")
+        self.fc1 = nn.Linear(channels_rk3,64)
+        self.fc2 = nn.Linear(64,5)
+
+    def forward(self,x_0,incidence_0_1,incidence_1_2,incidence_2_3):
+        x_0 = x_0.to(torch.float32)
+        #x_0 = x_0.view(28 * 28,1)
+        x_1_out = self.conv_0_to_1(x_0,incidence_0_1.T)
+        x_2_out = self.conv_1_to_2(x_1_out,incidence_1_2.T)
+        x_3_out = self.conv_2_to_3(x_2_out,incidence_2_3.T)
+          
+        x_1_new = self.att_0_to_1(x_0,     incidence_0_1.T, x_1_out)
+        x_2_new = self.att_1_to_2(x_1_new, incidence_1_2.T, x_2_out)
+        x_3_new = self.att_2_to_3(x_2_new, incidence_2_3.T, x_3_out)
+        x = torch.flatten(x_3_new, start_dim=1)
+        x = relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+        
+    def fit(self,train_loader,device="cpu"):
+        self.to(device)
+        optimizer = optim.AdamW(self.parameters(),lr=self.lr)
+        criterion = nn.CrossEntropyLoss()
+        
+        losses = []
+        self.train()
+        start = time.perf_counter()
+        for epoch in range(self.epochs):
+            total_loss = 0
+            for V, VF, VE, EF, FC,label,_ in train_loader:
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
+                optimizer.zero_grad()
+                output = self(V, VE, EF, FC)
+                loss = criterion(output, label)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            losses.append(total_loss/len(train_loader))
+            print(f"Epoch: {epoch+1}, Loss: {total_loss/len(train_loader)}")
+        end = time.perf_counter()
+        print(f"Training time: {end-start} seconds")
+                
+        return losses, end-start, (end-start)/self.epochs
+        
+    def test(self, test_loader,device="cpu"):
+        self.to(device)
+        self.eval()
+        with torch.no_grad():
+            correct = 0
+            total = 0
+            for V, VF, VE, EF, FC,label,_ in test_loader:
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
+                output = self(V, VE, EF, FC)
+                pred = output.argmax(dim=1, keepdim=True)
+                correct += pred.eq(label.view_as(pred)).sum().item()
+                total += label.size(0)
+            accuracy = 100. * correct/total
+            print(f"Test accuracy: {accuracy:.2f}%")
+                
+        return accuracy
+    
 class TNN(nn.Module):
-	def __init__(self,node_channels,channels_rk1,channels_rk2,channels_rk3, size_hidden_layer,lr, epochs):
-		super().__init__()
+    def __init__(self,node_channels,channels_rk1,channels_rk2,channels_rk3, size_hidden_layer,lr, epochs):
+        super().__init__()
 
-		self.lr = lr
-		self.epochs = epochs
+        self.lr = lr
+        self.epochs = epochs
 
-		self.conv_0_to_1 = CCConvLayer(in_channels = node_channels, out_channels =  channels_rk1, update_func="relu")
-		self.conv_1_to_2 = CCConvLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
-		self.conv_2_to_3 = CCConvLayer(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
-		# Add later 0 -> 2
-		#self.conv_0_to_2 = Conv(in_channels = node_channels, out_channels =  channels_rk2, update_func="relu")
-		self.fc1 = nn.Linear(channels_rk3,64)
-		self.fc2 = nn.Linear(64,5)
+        self.conv_0_to_1 = CCConvLayer(in_channels = node_channels, out_channels =  channels_rk1, update_func="relu")
+        self.conv_1_to_2 = CCConvLayer(in_channels = channels_rk1, out_channels =  channels_rk2, update_func="relu")
+        self.conv_2_to_3 = CCConvLayer(in_channels = channels_rk2, out_channels = channels_rk3, update_func="relu")
+        # Add later 0 -> 2
+        #self.conv_0_to_2 = Conv(in_channels = node_channels, out_channels =  channels_rk2, update_func="relu")
+        self.fc1 = nn.Linear(channels_rk3,64)
+        self.fc2 = nn.Linear(64,5)
 
-	def forward(self,x_0,incidence_0_1,incidence_1_2,incidence_2_3):
-		x_0 = x_0.to(torch.float32)
-		#x_0 = x_0.view(28 * 28,1)
-		x_1_out = self.conv_0_to_1(x_0,incidence_0_1.T)
-		x_2_out = self.conv_1_to_2(x_1_out,incidence_1_2.T)
-		x_3_out = self.conv_2_to_3(x_2_out,incidence_2_3.T)
-		x = torch.flatten(x_3_out, start_dim=1)
-		x = relu(self.fc1(x))
-		x = self.fc2(x)
-		return x
-		
-	def fit(self,train_loader,device="cpu"):
-		self.to(device)
-		optimizer = optim.AdamW(self.parameters(),lr=self.lr)
-		criterion = nn.CrossEntropyLoss()
-		
-		losses = []
-		self.train()
-		start = time.perf_counter()
-		for epoch in range(self.epochs):
-			total_loss = 0
-			for V, VF, VE, EF, FC,label,_ in train_loader:
-				V = V.to(device)
-				VF = VF.to(device)
-				VE = VE.to(device)
-				EF = EF.to(device)
-				FC = FC.to(device)
-				label = label.to(device)
-				optimizer.zero_grad()
-				output = self(V, VE, EF, FC)
-				loss = criterion(output, label)
-				loss.backward()
-				optimizer.step()
-				total_loss += loss.item()
-			losses.append(total_loss/len(train_loader))
-			print(f"Epoch: {epoch+1}, Loss: {total_loss/len(train_loader)}")
-		end = time.perf_counter()
-		print(f"Training time: {end-start} seconds")
-				
-		return losses, end-start, (end-start)/self.epochs
-		
-	def	test(self, test_loader,device="cpu"):
-		self.to(device)
-		self.eval()
-		with torch.no_grad():
-			correct = 0
-			total = 0
-			for V, VF, VE, EF, FC,label,_ in test_loader:
-				V = V.to(device)
-				VF = VF.to(device)
-				VE = VE.to(device)
-				EF = EF.to(device)
-				FC = FC.to(device)
-				label = label.to(device)
-				output = self(V, VE, EF, FC)
-				pred = output.argmax(dim=1, keepdim=True)
-				correct += pred.eq(label.view_as(pred)).sum().item()
-				total += label.size(0)
-			accuracy = 100. * correct/total
-			print(f"Test accuracy: {accuracy:.2f}%")
-				
-		return accuracy
+    def forward(self,x_0,incidence_0_1,incidence_1_2,incidence_2_3):
+        x_0 = x_0.to(torch.float32)
+        #x_0 = x_0.view(28 * 28,1)
+        x_1_out = self.conv_0_to_1(x_0,incidence_0_1.T)
+        x_2_out = self.conv_1_to_2(x_1_out,incidence_1_2.T)
+        x_3_out = self.conv_2_to_3(x_2_out,incidence_2_3.T)
+        x = torch.flatten(x_3_out, start_dim=1)
+        x = relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+        
+    def fit(self,train_loader,device="cpu"):
+        self.to(device)
+        optimizer = optim.AdamW(self.parameters(),lr=self.lr)
+        criterion = nn.CrossEntropyLoss()
+        
+        losses = []
+        self.train()
+        start = time.perf_counter()
+        for epoch in range(self.epochs):
+            total_loss = 0
+            for V, VF, VE, EF, FC,label,_ in train_loader:
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
+                optimizer.zero_grad()
+                output = self(V, VE, EF, FC)
+                loss = criterion(output, label)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            losses.append(total_loss/len(train_loader))
+            print(f"Epoch: {epoch+1}, Loss: {total_loss/len(train_loader)}")
+        end = time.perf_counter()
+        print(f"Training time: {end-start} seconds")
+                
+        return losses, end-start, (end-start)/self.epochs
+        
+    def test(self, test_loader,device="cpu"):
+        self.to(device)
+        self.eval()
+        with torch.no_grad():
+            correct = 0
+            total = 0
+            for V, VF, VE, EF, FC,label,_ in test_loader:
+                V = V.to(device)
+                VF = VF.to(device)
+                VE = VE.to(device)
+                EF = EF.to(device)
+                FC = FC.to(device)
+                label = label.to(device)
+                output = self(V, VE, EF, FC)
+                pred = output.argmax(dim=1, keepdim=True)
+                correct += pred.eq(label.view_as(pred)).sum().item()
+                total += label.size(0)
+            accuracy = 100. * correct/total
+            print(f"Test accuracy: {accuracy:.2f}%")
+                
+        return accuracy
 
 ################# GCN #################
 
@@ -584,17 +717,17 @@ class GCN(torch.nn.Module):
         self.conv1 = GCNConv(in_channels, hidden_channels1)
         self.conv2 = GCNConv(hidden_channels1, hidden_channels2)
         self.fc1   = torch.nn.Linear(hidden_channels2, hidden_channels3)
-        self.fc2   = torch.nn.Linear(hidden_channels3, out_channels)	
+        self.fc2   = torch.nn.Linear(hidden_channels3, out_channels)    
 
     def forward(self, x, edge_index, batch):
-    	# 1) Node-level GCN
-    	x = self.conv1(x, edge_index).relu()
-    	x = self.conv2(x, edge_index).relu()	
-    	# 2) Graph-level pooling
-    	x = global_mean_pool(x, batch)	
-    	x = self.fc1(x)  # logits per graph
-    	x = self.fc2(x)
-    	return x
+        # 1) Node-level GCN
+        x = self.conv1(x, edge_index).relu()
+        x = self.conv2(x, edge_index).relu()    
+        # 2) Graph-level pooling
+        x = global_mean_pool(x, batch)  
+        x = self.fc1(x)  # logits per graph
+        x = self.fc2(x)
+        return x
         
     def fit(self, train_loader, device="cpu"):
         self.to(device)
@@ -650,17 +783,17 @@ class GAN(nn.Module):
         self.conv2 = GATv2Conv(hidden_channels1 * heads1, hidden_channels2,heads=heads2,concat=True)
 
         self.fc1   = torch.nn.Linear(hidden_channels2 * heads2 , hidden_channels3)
-        self.fc2   = torch.nn.Linear(hidden_channels3, out_channels)	
+        self.fc2   = torch.nn.Linear(hidden_channels3, out_channels)    
 
     def forward(self, x, edge_index, batch):
-    	# 1) Node-level GCN
-    	x = self.conv1(x, edge_index).relu()
-    	x = self.conv2(x, edge_index).relu()	
-    	# 2) Graph-level pooling
-    	x = global_mean_pool(x, batch)	
-    	x = self.fc1(x).relu()  # logits per graph
-    	x = self.fc2(x)
-    	return x
+        # 1) Node-level GCN
+        x = self.conv1(x, edge_index).relu()
+        x = self.conv2(x, edge_index).relu()    
+        # 2) Graph-level pooling
+        x = global_mean_pool(x, batch)  
+        x = self.fc1(x).relu()  # logits per graph
+        x = self.fc2(x)
+        return x
         
     def fit(self, train_loader, device="cpu"):
         self.to(device)
@@ -722,17 +855,17 @@ class GIN(torch.nn.Module):
         
         # GIN layer 1 MLP
         nn1 = nn.Sequential(
-        	nn.Linear(in_channels, hidden_channels1),
-        	nn.ReLU(),
-        	nn.Linear(hidden_channels1, hidden_channels1),
+            nn.Linear(in_channels, hidden_channels1),
+            nn.ReLU(),
+            nn.Linear(hidden_channels1, hidden_channels1),
         )
         self.conv1 = GINConv(nn1, train_eps=True)
         
         # GIN layer 2 MLP
         nn2 = nn.Sequential(
-        	nn.Linear(hidden_channels1, hidden_channels2),
-        	nn.ReLU(),
-        	nn.Linear(hidden_channels2, hidden_channels2),
+            nn.Linear(hidden_channels1, hidden_channels2),
+            nn.ReLU(),
+            nn.Linear(hidden_channels2, hidden_channels2),
         )
         self.conv2 = GINConv(nn2, train_eps=True)
         
@@ -741,21 +874,21 @@ class GIN(torch.nn.Module):
         self.fc2 = nn.Linear(hidden_channels3, out_channels)
 
     def forward(self, x, edge_index, batch):
-    	# 1) Node-level GIN
-    	x = self.conv1(x, edge_index)
-    	x = F.relu(x)
+        # 1) Node-level GIN
+        x = self.conv1(x, edge_index)
+        x = F.relu(x)
 
-    	x = self.conv2(x, edge_index)
-    	x = F.relu(x)
+        x = self.conv2(x, edge_index)
+        x = F.relu(x)
 
-    	# 2) Graph-level pooling (sum is standard for GIN)
-    	x = global_add_pool(x, batch)  # [num_graphs, hidden_channels2]
+        # 2) Graph-level pooling (sum is standard for GIN)
+        x = global_add_pool(x, batch)  # [num_graphs, hidden_channels2]
 
-    	# 3) Graph-level MLP
-    	x = self.fc1(x)
-    	x = F.relu(x)
-    	x = self.fc2(x)
-    	return x
+        # 3) Graph-level MLP
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.fc2(x)
+        return x
 
     def fit(self, train_loader, device="cpu"):
         self.to(device)
@@ -807,7 +940,8 @@ def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_s
             fixed_params[hp[0]] = hp[2]
     
     # Load data
-    if isinstance(model,TNN):
+    TNN_MODELS = {TNN, TNN_Att}
+    if model in TNN_MODELS:
         dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
         train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 
@@ -815,10 +949,10 @@ def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_s
         test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
     else:
         data_list = build_dataset({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
-        train_loader = DataLoader(data_list, batch_size=32, shuffle=True)
+        train_loader = PyGDataLoader(data_list, batch_size=32, shuffle=True)
 
         data_list = build_dataset({name: 100 for name in SOLID_TYPES},data_params[0],data_params[1])
-        test_loader = DataLoader(data_list, batch_size=32, shuffle=True)
+        test_loader = PyGDataLoader(data_list, batch_size=32, shuffle=True)
 
     def objective(trial):
         hp_trial_dict = {}
@@ -831,14 +965,11 @@ def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_s
             elif hp[1] == "float":
                 hp_trial_dict[hp[0]] = trial.suggest_float(hp[0], hp[2][0], hp[2][1])
         
-        accuracies = []
-        for i in range(runs_per_hp_comb):
-            cur_model = model(**hp_trial_dict,**fixed_params)
-            cur_model.fit(train_loader,device=device)
-            acc = cur_model.test(test_loader,device=device)
-            accuracies.append(acc)
+        cur_model = model(**hp_trial_dict,**fixed_params)
+        cur_model.fit(train_loader,device=device)
+        acc = cur_model.test(test_loader,device=device)
         
-        return np.max(accuracies)
+        return acc
     
     study = optuna.create_study(direction="maximize")
     study.optimize(objective, n_trials=n_trials)
@@ -846,17 +977,20 @@ def hp_optimization(model, hps, data_params, n_trials,runs_per_hp_comb, random_s
     return study.trials_dataframe(),{**study.best_params, **fixed_params}
 
 HYPERPARAMS = {
-    "TNN": [("epochs", "int",(5,15)),("channels_rk1","int",(4,32)),("channels_rk2","int",(4,64)),
-    ("channels_rk3","int",(64,256)),("size_hidden_layer","int",(32,128)),("lr","float",(1e-3,1e-2)), ("node_channels","fixed",3)],
+    "TNN": [("epochs", "int",(20,50)),("channels_rk1","int",(4,32)),("channels_rk2","int",(4,64)),
+    ("channels_rk3","int",(64,256)),("size_hidden_layer","int",(32,128)),("lr","float",(1e-4,1e-3)), ("node_channels","fixed",3)],
 
-    "GCN": [("lr","float",(1e-3,1e-1)),("epochs", "int",(5,20)),("in_channels","fixed",3),("out_channels","fixed",5),
+    "TNN_Att": [("epochs", "int",(20,50)),("channels_rk1","int",(4,32)),("channels_rk2","int",(4,64)),
+    ("channels_rk3","int",(64,256)),("size_hidden_layer","int",(32,128)),("lr","float",(1e-4,1e-3)), ("node_channels","fixed",3)],
+
+    "GCN": [("lr","float",(1e-4,1e-3)),("epochs", "int",(20,50)),("in_channels","fixed",3),("out_channels","fixed",5),
     ("hidden_channels1","int",(16,128)),("hidden_channels2","int",(16,128)),("hidden_channels3","int",(16,128)) ],
     
-    "GAN": [("lr","float",(1e-3,1e-1)),("epochs", "int",(5,20)),("in_channels","fixed",3),("out_channels","fixed",5),
+    "GAN": [("lr","float",(1e-4,1e-3)),("epochs", "int",(20,50)),("in_channels","fixed",3),("out_channels","fixed",5),
     ("hidden_channels1","int",(16,128)),("hidden_channels2","int",(16,128)),("hidden_channels3","int",(16,128)),
     ("heads1","int",(1,4)),("heads2","int",(1,4)) ],
 
-    "GIN": [("lr","float",(1e-3,1e-1)),("epochs", "int",(5,20)),("in_channels","fixed",3),("out_channels","fixed",5),
+    "GIN": [("lr","float",(1e-4,1e-3)),("epochs", "int",(20,50)),("in_channels","fixed",3),("out_channels","fixed",5),
     ("hidden_channels1","int",(16,128)),("hidden_channels2","int",(16,128)),("hidden_channels3","int",(16,128)) ]
     }
 
@@ -874,7 +1008,7 @@ if __name__ == "__main__":
     DEVICE = args.device
 
 
-    MODELS = {"TNN": TNN, "GCN": GCN, "GAN": GAN, "GIN": GIN}
+    MODELS = {"TNN": TNN, "GCN": GCN, "GAN": GAN, "GIN": GIN, "TNN_Att": TNN_Att}
 
     model = MODELS[args.model]
 
@@ -882,8 +1016,8 @@ if __name__ == "__main__":
     os.makedirs(path, exist_ok=True)
 
     data_params = (40, 0.01)
-    hps = HYPERPARAMS[args.model]
-    n_trials = 50
+    hps = HYPERPARAMS[args.model] 
+    n_trials = 5
     runs_per_hp_comb = 3
     study_dataframe, best_hps = hp_optimization(model, hps, data_params, n_trials, runs_per_hp_comb, SEED,device=DEVICE)
 
@@ -894,10 +1028,11 @@ if __name__ == "__main__":
     epsf = [0.01,0.1,0.2,0.3]
 
     results = {}
-    runs_per_data_params = 5
+    runs_per_data_params = 3
     for m,e in product(mnoev, epsf):
+        print(f"{m}_{e}")
         results[f"{m}_{e}"] = {}
-        if args.model=="TNN":
+        if args.model in {"TNN", "TNN_Att"}:
             dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},m,e)
             train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 
@@ -905,10 +1040,10 @@ if __name__ == "__main__":
             test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
         else:
             data_list = build_dataset({name: 500 for name in SOLID_TYPES},m,e)
-            train_loader = DataLoader(data_list, batch_size=32, shuffle=True)
+            train_loader = PyGDataLoader(data_list, batch_size=32, shuffle=True)
 
             data_list = build_dataset({name: 100 for name in SOLID_TYPES},m,e)
-            test_loader = DataLoader(data_list, batch_size=32, shuffle=True)
+            test_loader = PyGDataLoader(data_list, batch_size=32, shuffle=True)
 
         accuracies = []
         for i in range(runs_per_data_params):
@@ -919,7 +1054,7 @@ if __name__ == "__main__":
 
             results[f"{m}_{e}"][f"run_{i+1}"] = {"losses":losses,"accuracy":accs,"total_time":total_time,"time_per_epoch":time_per_epoch}
         
-        results[f"{m}_{e}"]["results"] = {"best_acc": float(np.max(accuracies)),"best_run": int(np.argmax(accuracies)) + 1, "best_hps":best_hps}
+        results[f"{m}_{e}"]["results"] = {"best_acc": float(np.max(accuracies)),"mean_acc": float(np.mean(accuracies)), "std_acc":float(np.std(accuracies)),"min_acc":float(np.min(accuracies)),"best_run": int(np.argmax(accuracies)) + 1, "best_hps":best_hps}
         with open(f"{path}/results.json","w") as f:
             json.dump(results,f, indent=2, sort_keys=True)
 
