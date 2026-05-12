@@ -603,6 +603,10 @@ class TNN_Att(nn.Module):
 			avg_loss = total_loss/len(train_loader)
 			losses.append(avg_loss)
 			print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+			if np.isnan(avg_loss):
+				print(f"Early stopping: NaN loss at epoch {epoch+1}")
+				stuck = True
+				break
 			if abs(avg_loss - STUCK_LOSS) < STUCK_EPS:
 				stuck_count += 1
 				if stuck_count >= STUCK_PATIENCE:
@@ -692,6 +696,10 @@ class TNN(nn.Module):
 			avg_loss = total_loss/len(train_loader)
 			losses.append(avg_loss)
 			print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+			if np.isnan(avg_loss):
+				print(f"Early stopping: NaN loss at epoch {epoch+1}")
+				stuck = True
+				break
 			if abs(avg_loss - STUCK_LOSS) < STUCK_EPS:
 				stuck_count += 1
 				if stuck_count >= STUCK_PATIENCE:
@@ -774,6 +782,10 @@ class GCN(torch.nn.Module):
 			avg_loss = total_loss/len(train_loader)
 			losses.append(avg_loss)
 			print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+			if np.isnan(avg_loss):
+				print(f"Early stopping: NaN loss at epoch {epoch+1}")
+				stuck = True
+				break
 			if abs(avg_loss - STUCK_LOSS) < STUCK_EPS:
 				stuck_count += 1
 				if stuck_count >= STUCK_PATIENCE:
@@ -851,6 +863,10 @@ class GAN(nn.Module):
 			avg_loss = total_loss/len(train_loader)
 			losses.append(avg_loss)
 			print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+			if np.isnan(avg_loss):
+				print(f"Early stopping: NaN loss at epoch {epoch+1}")
+				stuck = True
+				break
 			if abs(avg_loss - STUCK_LOSS) < STUCK_EPS:
 				stuck_count += 1
 				if stuck_count >= STUCK_PATIENCE:
@@ -958,6 +974,10 @@ class GIN(torch.nn.Module):
 			avg_loss = total_loss/len(train_loader)
 			losses.append(avg_loss)
 			print(f"Epoch: {epoch+1}, Loss: {avg_loss}")
+			if np.isnan(avg_loss):
+				print(f"Early stopping: NaN loss at epoch {epoch+1}")
+				stuck = True
+				break
 			if abs(avg_loss - STUCK_LOSS) < STUCK_EPS:
 				stuck_count += 1
 				if stuck_count >= STUCK_PATIENCE:
