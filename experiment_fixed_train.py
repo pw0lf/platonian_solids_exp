@@ -1020,16 +1020,16 @@ def hp_optimization(model, hps, data_params, n_trials, random_seed, device="cpu"
 	# Load data
 	TNN_MODELS = {TNN, TNN_Att}
 	if model in TNN_MODELS:
-		dataset = NoisyPlatonicSolids({name: 2500 for name in SOLID_TYPES},data_params[0],data_params[1])
+		dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
 		train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 
-		dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
+		dataset = NoisyPlatonicSolids({name: 100 for name in SOLID_TYPES},data_params[0],data_params[1])
 		test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 	else:
-		data_list = build_dataset({name: 2500 for name in SOLID_TYPES},data_params[0],data_params[1])
+		data_list = build_dataset({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
 		train_loader = PyGDataLoader(data_list, batch_size=32, shuffle=True)
 
-		data_list = build_dataset({name: 500 for name in SOLID_TYPES},data_params[0],data_params[1])
+		data_list = build_dataset({name: 100 for name in SOLID_TYPES},data_params[0],data_params[1])
 		test_loader = PyGDataLoader(data_list, batch_size=32, shuffle=True)
 
 	def objective(trial):
@@ -1095,7 +1095,7 @@ if __name__ == "__main__":
 
 	model = MODELS[args.model]
 
-	path = f"{args.path}/{args.model}_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
+	path = f"{args.path}/{args.model}_fixed_train_{datetime.now().strftime('%d-%m-%Y_%H-%M-%S')}"
 	os.makedirs(path, exist_ok=True)
 
 	data_params = (40, 0.01)
@@ -1106,37 +1106,42 @@ if __name__ == "__main__":
 	top5 = study_dataframe[study_dataframe["state"] == "COMPLETE"].sort_values("value", ascending=False).head(5)
 	top5.to_csv(f"{path}/top5_params.csv")
 
-	mnoev = np.arange(40, 160, 10)
-	epsf = [0.01,0.1,0.2,0.3]
+	TRAIN_M   = 40
+	TRAIN_EPS = 0.1
 
+	if args.model in {"TNN", "TNN_Att"}:
+		dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES}, TRAIN_M, TRAIN_EPS)
+		train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
+	else:
+		data_list = build_dataset({name: 500 for name in SOLID_TYPES}, TRAIN_M, TRAIN_EPS)
+		train_loader = PyGDataLoader(data_list, batch_size=32, shuffle=True)
+
+	for restart in range(4):
+		cur_model = model(**best_hps)
+		losses, total_time, time_per_epoch, stuck = cur_model.fit(train_loader, device=DEVICE)
+		if not stuck:
+			break
+		if restart < 3:
+			print(f"Loss stuck, restarting (attempt {restart + 2}/4)...")
+
+	mnoev = np.arange(40, 160, 10)
+	epsf = [0.01, 0.1, 0.2, 0.3]
 
 	results = {}
-	for m,e in product(mnoev, epsf):
+	for m, e in product(mnoev, epsf):
 		if args.model in {"TNN", "TNN_Att"}:
-			dataset = NoisyPlatonicSolids({name: 2500 for name in SOLID_TYPES},m,e)
-			train_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
-
-			dataset = NoisyPlatonicSolids({name: 500 for name in SOLID_TYPES},m,e)
+			dataset = NoisyPlatonicSolids({name: 100 for name in SOLID_TYPES}, m, e)
 			test_loader = DataLoader(dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
 		else:
-			data_list = build_dataset({name: 2500 for name in SOLID_TYPES},m,e)
-			train_loader = PyGDataLoader(data_list, batch_size=32, shuffle=True)
-
-			data_list = build_dataset({name: 500 for name in SOLID_TYPES},m,e)
+			data_list = build_dataset({name: 100 for name in SOLID_TYPES}, m, e)
 			test_loader = PyGDataLoader(data_list, batch_size=32, shuffle=True)
 
-		for restart in range(4):  # initial attempt + up to 3 restarts
-			cur_model = model(**best_hps)
-			losses, total_time, time_per_epoch, stuck = cur_model.fit(train_loader, device=DEVICE)
-			if not stuck:
-				break
-			if restart < 3:
-				print(f"Loss stuck, restarting (attempt {restart + 2}/4)...")
 		accs = cur_model.test(test_loader, device=DEVICE)
-
-		results[f"{m}_{e}"] = {"losses":losses,"accuracy":accs,"total_time":total_time,"time_per_epoch":time_per_epoch,"restarts":restart,"best_hps":best_hps}
-		with open(f"{path}/results.json","w") as f:
-			json.dump(results,f, indent=2, sort_keys=True)
+		results[f"{m}_{e}"] = {"losses": losses, "accuracy": accs, "total_time": total_time,
+								"time_per_epoch": time_per_epoch, "restarts": restart,
+								"best_hps": best_hps, "train_m": TRAIN_M, "train_eps": TRAIN_EPS}
+		with open(f"{path}/results.json", "w") as f:
+			json.dump(results, f, indent=2, sort_keys=True)
 
 
 
