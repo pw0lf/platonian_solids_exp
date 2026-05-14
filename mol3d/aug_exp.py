@@ -1,6 +1,9 @@
 import warnings
 warnings.filterwarnings("ignore")
 
+from rdkit import RDLogger
+RDLogger.DisableLog("rdApp.*")
+
 import time
 import json
 import argparse
