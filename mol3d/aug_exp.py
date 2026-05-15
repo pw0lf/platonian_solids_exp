@@ -7,6 +7,7 @@ RDLogger.DisableLog("rdApp.*")
 import time
 import json
 import argparse
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -17,20 +18,21 @@ import matplotlib.pyplot as plt
 from data_loader.mol3d_aug import Mol3d_Aug
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--path",      required=True, help="Path prefix for output files (no extension)")
-parser.add_argument("--datapath",  required=True)
-parser.add_argument("--datasize",  type=int, default=50_000)
-parser.add_argument("--epochs",    type=int, default=100)
-parser.add_argument("--lr",        type=float, default=1e-4)
-parser.add_argument("--channels",  type=int, default=64)
-parser.add_argument("--dropout",   type=float, default=0.1)
-parser.add_argument("--batch_size",type=int, default=64)
+parser.add_argument("--path",       required=True, help="Path prefix for output files (no extension)")
+parser.add_argument("--datapath",   required=True)
+parser.add_argument("--datasize",   type=int,   default=50_000)
+parser.add_argument("--epochs",     type=int,   default=100)
+parser.add_argument("--lr",         type=float, default=1e-4)
+parser.add_argument("--channels",   type=int,   default=64)
+parser.add_argument("--dropout",    type=float, default=0.1)
+parser.add_argument("--batch_size", type=int,   default=64)
+parser.add_argument("--k",          type=int,   default=2)
 args = parser.parse_args()
 
 # --- Data -------------------------------------------------------------------
 
-print(f"Loading dataset (size={args.datasize})...")
-dataset = Mol3d_Aug(root=args.datapath, size=args.datasize)
+print(f"Loading dataset (size={args.datasize}, k={args.k})...")
+dataset = Mol3d_Aug(root=args.datapath, size=args.datasize, k=args.k)
 print(f"Loaded {len(dataset)} molecules")
 
 n_train = int(0.6 * len(dataset))
@@ -72,7 +74,10 @@ def sparse_block_diag(sparse_list):
 
 
 def collate(batch):
-    atom_feat, bond_feat, ring_feat, icd01, icd02, icd12, icd03, icd13, icd23, hlgap = zip(*batch)
+    atom_feat, bond_feat, ring_feat, \
+    icd01, icd02, icd12, \
+    icd03, icd13, icd23, icd34, \
+    adj00, adj11, adj22, adj33, hlgap = zip(*batch)
     labels = (torch.cat(hlgap, dim=0) - label_mean) / label_std
     return (
         (torch.cat(atom_feat, dim=0) - atom_mean) / atom_std,
@@ -84,6 +89,11 @@ def collate(batch):
         sparse_block_diag(icd03),
         sparse_block_diag(icd13),
         sparse_block_diag(icd23),
+        sparse_block_diag(icd34),
+        sparse_block_diag(adj00),
+        sparse_block_diag(adj11),
+        sparse_block_diag(adj22),
+        sparse_block_diag(adj33),
         labels,
     )
 
@@ -198,31 +208,79 @@ class Simple_Att_TNN(nn.Module):
         self.proj_1 = nn.Linear(BOND_DIM, channels_rk1)
         self.proj_2 = nn.Linear(RING_DIM, channels_rk2)
 
-        self.conv_0_to_1 = CCConvLayer(channels_rk0, channels_rk1, update_func=update_func, batch_norm=batch_norm, normalize=normalize)
-        self.conv_1_to_2 = CCConvLayer(channels_rk1, channels_rk2, update_func=update_func, batch_norm=batch_norm, normalize=normalize)
-
-        self.att_0_to_1 = CCAttLayer(channels_rk0, channels_rk1, update_func=update_func, batch_norm=batch_norm)
-        self.att_1_to_2 = CCAttLayer(channels_rk1, channels_rk2, update_func=update_func, batch_norm=batch_norm)
-
         self.conv_0_to_3 = CCConvLayer(channels_rk0, channels_rk3, update_func=update_func, batch_norm=batch_norm, normalize=normalize)
         self.conv_1_to_3 = CCConvLayer(channels_rk1, channels_rk3, update_func=update_func, batch_norm=batch_norm, normalize=normalize)
         self.conv_2_to_3 = CCConvLayer(channels_rk2, channels_rk3, update_func=update_func, batch_norm=batch_norm, normalize=normalize)
 
-        self.ln_x3 = nn.LayerNorm(channels_rk3)
+        self.att_0_to_0 = CCAttLayer(channels_rk0, channels_rk0, update_func=update_func, batch_norm=batch_norm)
+        self.att_0_to_1 = CCAttLayer(channels_rk0, channels_rk1, update_func=update_func, batch_norm=batch_norm)
+        self.att_0_to_2 = CCAttLayer(channels_rk0, channels_rk2, update_func=update_func, batch_norm=batch_norm)
+        self.att_0_to_3 = CCAttLayer(channels_rk0, channels_rk3, update_func=update_func, batch_norm=batch_norm)
+
+        self.att_1_to_0 = CCAttLayer(channels_rk1, channels_rk0, update_func=update_func, batch_norm=batch_norm)
+        self.att_1_to_1 = CCAttLayer(channels_rk1, channels_rk1, update_func=update_func, batch_norm=batch_norm)
+        self.att_1_to_2 = CCAttLayer(channels_rk1, channels_rk2, update_func=update_func, batch_norm=batch_norm)
+        self.att_1_to_3 = CCAttLayer(channels_rk1, channels_rk3, update_func=update_func, batch_norm=batch_norm)
+
+        self.att_2_to_0 = CCAttLayer(channels_rk2, channels_rk0, update_func=update_func, batch_norm=batch_norm)
+        self.att_2_to_1 = CCAttLayer(channels_rk2, channels_rk1, update_func=update_func, batch_norm=batch_norm)
+        self.att_2_to_2 = CCAttLayer(channels_rk2, channels_rk2, update_func=update_func, batch_norm=batch_norm)
+        self.att_2_to_3 = CCAttLayer(channels_rk2, channels_rk3, update_func=update_func, batch_norm=batch_norm)
+
+        self.att_3_to_0 = CCAttLayer(channels_rk3, channels_rk0, update_func=update_func, batch_norm=batch_norm)
+        self.att_3_to_1 = CCAttLayer(channels_rk3, channels_rk1, update_func=update_func, batch_norm=batch_norm)
+        self.att_3_to_2 = CCAttLayer(channels_rk3, channels_rk2, update_func=update_func, batch_norm=batch_norm)
+        self.att_3_to_3 = CCAttLayer(channels_rk3, channels_rk3, update_func=update_func, batch_norm=batch_norm)
+
+        self.conv_0_to_4 = CCConvLayer(channels_rk0, channels_rk3, update_func=update_func, batch_norm=batch_norm, normalize=normalize)
+        self.conv_1_to_4 = CCConvLayer(channels_rk1, channels_rk3, update_func=update_func, batch_norm=batch_norm, normalize=normalize)
+        self.conv_2_to_4 = CCConvLayer(channels_rk2, channels_rk3, update_func=update_func, batch_norm=batch_norm, normalize=normalize)
+        self.conv_3_to_4 = CCConvLayer(channels_rk3, channels_rk3, update_func=update_func, batch_norm=batch_norm, normalize=normalize)
+
+        self.ln_out = nn.LayerNorm(channels_rk3)
         self.fc1 = nn.Linear(channels_rk3, size_hidden_layer1)
         self.fc2 = nn.Linear(size_hidden_layer1, size_hidden_layer2)
         self.fc3 = nn.Linear(size_hidden_layer2, output_channels)
 
-    def forward(self, atom, bond, ring, icd01, icd02, icd03, icd12, icd13, icd23):
+    def forward(self, atom, bond, ring,
+                icd01, icd02, icd12,
+                icd03, icd13, icd23, icd34,
+                adj00, adj11, adj22, adj33):
         x_0 = self.proj_0(atom.float())
-        x_1 = self.proj_1(bond.float()) + self.conv_0_to_1(x_0, icd01.T)
-        x_2 = self.proj_2(ring.float()) + self.conv_1_to_2(x_1, icd12.T)
-        x_1 = self.att_0_to_1(x_0, icd01.T, x_1)
-        x_2 = self.att_1_to_2(x_1, icd12.T, x_2)
+        x_1 = self.proj_1(bond.float())
+        x_2 = self.proj_2(ring.float())
         x_3 = (self.conv_0_to_3(x_0, icd03.T)
               + self.conv_1_to_3(x_1, icd13.T)
               + self.conv_2_to_3(x_2, icd23.T))
-        x_out = self.dropout(F.leaky_relu(self.fc1(self.ln_x3(x_3))))
+
+        x_0_new = (self.att_0_to_0(x_0, adj00,   x_0)
+                 + self.att_1_to_0(x_1, icd01,   x_0)
+                 + self.att_2_to_0(x_2, icd02,   x_0)
+                 + self.att_3_to_0(x_3, icd03,   x_0) + x_0)
+
+        x_1_new = (self.att_0_to_1(x_0, icd01.T, x_1)
+                 + self.att_1_to_1(x_1, adj11,   x_1)
+                 + self.att_2_to_1(x_2, icd12,   x_1)
+                 + self.att_3_to_1(x_3, icd13,   x_1) + x_1)
+
+        x_2_new = (self.att_0_to_2(x_0, icd02.T, x_2)
+                 + self.att_1_to_2(x_1, icd12.T, x_2)
+                 + self.att_2_to_2(x_2, adj22,   x_2)
+                 + self.att_3_to_2(x_3, icd23,   x_2) + x_2)
+
+        x_3_new = (self.att_0_to_3(x_0, icd03.T, x_3)
+                 + self.att_1_to_3(x_1, icd13.T, x_3)
+                 + self.att_2_to_3(x_2, icd23.T, x_3)
+                 + self.att_3_to_3(x_3, adj33,   x_3) + x_3)
+
+        x_0, x_1, x_2, x_3 = x_0_new, x_1_new, x_2_new, x_3_new
+
+        x_4 = (icd34.T @ self.conv_0_to_4(x_0, icd03.T)
+              + icd34.T @ self.conv_1_to_4(x_1, icd13.T)
+              + icd34.T @ self.conv_2_to_4(x_2, icd23.T)
+              + self.conv_3_to_4(x_3, icd34.T))
+
+        x_out = self.dropout(F.leaky_relu(self.fc1(self.ln_out(x_4))))
         x_out = self.dropout(F.leaky_relu(self.fc2(x_out)))
         return self.fc3(x_out)
 
@@ -251,11 +309,11 @@ for epoch in range(model.epochs):
     component_accum = {c: 0.0 for c in components}
 
     for batch in train_loader:
-        atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, hlgap = [
+        atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33, hlgap = [
             b.to(device) for b in batch
         ]
         optimizer.zero_grad()
-        out = model(atom, bond, ring, icd01, icd02, icd03, icd12, icd13, icd23).squeeze(-1)
+        out = model(atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33).squeeze(-1)
         loss = criterion(out, hlgap.squeeze(-1))
         loss.backward()
 
@@ -278,10 +336,10 @@ for epoch in range(model.epochs):
     val_loss = 0
     with torch.no_grad():
         for batch in val_loader:
-            atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, hlgap = [
+            atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33, hlgap = [
                 b.to(device) for b in batch
             ]
-            out = model(atom, bond, ring, icd01, icd02, icd03, icd12, icd13, icd23).squeeze(-1)
+            out = model(atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33).squeeze(-1)
             val_loss += criterion(out, hlgap.squeeze(-1)).item()
     val_losses.append(val_loss / len(val_loader))
 
@@ -295,10 +353,10 @@ model.eval()
 all_preds, all_targets = [], []
 with torch.no_grad():
     for batch in test_loader:
-        atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, hlgap = [
+        atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33, hlgap = [
             b.to(device) for b in batch
         ]
-        out = model(atom, bond, ring, icd01, icd02, icd03, icd12, icd13, icd23).squeeze(-1)
+        out = model(atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33).squeeze(-1)
         all_preds.append(out.cpu())
         all_targets.append(hlgap.squeeze(-1).cpu())
 
@@ -312,20 +370,23 @@ print(f"Test MAE (eV):         {mae_ev:.4f}")
 # --- Save results -----------------------------------------------------------
 
 results = {
-    "model_kwargs":              model_kwargs,
-    "datasize":                  args.datasize,
-    "n_train":                   n_train,
-    "n_val":                     n_val - n_train,
-    "n_test":                    len(dataset) - n_val,
-    "label_mean":                label_mean.item(),
-    "label_std":                 label_std.item(),
-    "train_losses":              train_losses,
-    "val_losses":                val_losses,
-    "epoch_times":               epoch_times,
-    "grad_norms_per_component":  grad_norms_per_component,
-    "test_mae_norm":             mae_norm,
-    "test_mae_ev":               mae_ev,
+    "model_kwargs":             model_kwargs,
+    "datasize":                 args.datasize,
+    "k":                        args.k,
+    "n_train":                  n_train,
+    "n_val":                    n_val - n_train,
+    "n_test":                   len(dataset) - n_val,
+    "label_mean":               label_mean.item(),
+    "label_std":                label_std.item(),
+    "train_losses":             train_losses,
+    "val_losses":               val_losses,
+    "epoch_times":              epoch_times,
+    "grad_norms_per_component": grad_norms_per_component,
+    "test_mae_norm":            mae_norm,
+    "test_mae_ev":              mae_ev,
 }
+
+Path(args.path).parent.mkdir(parents=True, exist_ok=True)
 
 json_path = args.path + ".json"
 with open(json_path, "w") as f:
