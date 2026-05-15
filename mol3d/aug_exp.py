@@ -4,6 +4,7 @@ warnings.filterwarnings("ignore")
 from rdkit import RDLogger
 RDLogger.DisableLog("rdApp.*")
 
+import os
 import time
 import json
 import argparse
@@ -12,28 +13,56 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Subset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from data_loader.mol3d_aug import Mol3d_Aug
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--path",       required=True, help="Path prefix for output files (no extension)")
-parser.add_argument("--datapath",   required=True)
-parser.add_argument("--datasize",   type=int,   default=50_000)
-parser.add_argument("--epochs",     type=int,   default=100)
-parser.add_argument("--lr",         type=float, default=1e-4)
-parser.add_argument("--channels",   type=int,   default=64)
-parser.add_argument("--dropout",    type=float, default=0.1)
-parser.add_argument("--batch_size", type=int,   default=64)
-parser.add_argument("--k",          type=int,   default=2)
+parser.add_argument("--path",        required=True, help="Path prefix for output files (no extension)")
+parser.add_argument("--datapath",    required=True)
+parser.add_argument("--datasize",    type=int,   default=50_000)
+parser.add_argument("--epochs",      type=int,   default=100)
+parser.add_argument("--lr",          type=float, default=1e-3)
+parser.add_argument("--channels",    type=int,   default=64)
+parser.add_argument("--dropout",     type=float, default=0.3)
+parser.add_argument("--batch_size",  type=int,   default=64)
+parser.add_argument("--k",           type=int,   default=2)
+parser.add_argument("--weight_decay",type=float, default=0.1)
+parser.add_argument("--drop_edge_p", type=float, default=0.1)
 args = parser.parse_args()
+
+# --- DDP setup --------------------------------------------------------------
+
+is_ddp = "LOCAL_RANK" in os.environ
+if is_ddp:
+    dist.init_process_group(backend="nccl")
+    local_rank  = int(os.environ["LOCAL_RANK"])
+    rank        = dist.get_rank()
+    world_size  = dist.get_world_size()
+    device      = torch.device(f"cuda:{local_rank}")
+    torch.cuda.set_device(device)
+else:
+    rank       = 0
+    world_size = 1
+    device     = ("cuda" if torch.cuda.is_available()
+                  else "mps" if torch.backends.mps.is_available()
+                  else "cpu")
+
+def print0(*a, **kw):
+    if rank == 0:
+        print(*a, **kw)
 
 # --- Data -------------------------------------------------------------------
 
-print(f"Loading dataset (size={args.datasize}, k={args.k})...")
+print0(f"Loading dataset (size={args.datasize}, k={args.k})...")
 dataset = Mol3d_Aug(root=args.datapath, size=args.datasize, k=args.k)
-print(f"Loaded {len(dataset)} molecules")
+print0(f"Loaded {len(dataset)} molecules")
 
 n_train = int(0.6 * len(dataset))
 n_val   = int(0.8 * len(dataset))
@@ -41,9 +70,9 @@ n_val   = int(0.8 * len(dataset))
 train_labels = torch.cat([dataset[i][-1] for i in range(n_train)])
 label_mean = train_labels.mean()
 label_std  = train_labels.std().clamp(min=1e-6)
-print(f"Label mean: {label_mean:.4f}, std: {label_std:.4f}")
+print0(f"Label mean: {label_mean:.4f}, std: {label_std:.4f}")
 
-print("Computing feature statistics...")
+print0("Computing feature statistics...")
 atom_feats_train = torch.cat([dataset[i][0] for i in range(n_train)])
 bond_feats_train = torch.cat([dataset[i][1] for i in range(n_train)])
 ring_feats_train = torch.cat([dataset[i][2] for i in range(n_train)])
@@ -54,8 +83,8 @@ ring_mean, ring_std = ring_feats_train.mean(0), ring_feats_train.std(0).clamp(mi
 
 
 def sparse_block_diag(sparse_list):
-    device = sparse_list[0].device
-    dtype  = sparse_list[0].dtype
+    device_ = sparse_list[0].device
+    dtype   = sparse_list[0].dtype
     rows, cols, vals = [], [], []
     row_offset = col_offset = 0
     for S in sparse_list:
@@ -70,7 +99,7 @@ def sparse_block_diag(sparse_list):
     indices = torch.stack([torch.cat(rows), torch.cat(cols)])
     return torch.sparse_coo_tensor(indices, torch.cat(vals),
                                    size=(row_offset, col_offset),
-                                   device=device, dtype=dtype)
+                                   device=device_, dtype=dtype)
 
 
 def collate(batch):
@@ -98,14 +127,51 @@ def collate(batch):
     )
 
 
-train_loader = DataLoader(Subset(dataset, range(n_train)),
-                          batch_size=args.batch_size, shuffle=False, collate_fn=collate)
-val_loader   = DataLoader(Subset(dataset, range(n_train, n_val)),
-                          batch_size=args.batch_size, collate_fn=collate)
-test_loader  = DataLoader(Subset(dataset, range(n_val, len(dataset))),
-                          batch_size=args.batch_size, collate_fn=collate)
+train_subset = Subset(dataset, range(n_train))
+val_subset   = Subset(dataset, range(n_train, n_val))
+test_subset  = Subset(dataset, range(n_val, len(dataset)))
 
-print(f"Train: {n_train} | Val: {n_val - n_train} | Test: {len(dataset) - n_val}")
+if is_ddp:
+    train_sampler = DistributedSampler(train_subset, shuffle=True)
+    val_sampler   = DistributedSampler(val_subset,   shuffle=False)
+    train_loader  = DataLoader(train_subset, batch_size=args.batch_size,
+                               sampler=train_sampler, collate_fn=collate)
+    val_loader    = DataLoader(val_subset,   batch_size=args.batch_size,
+                               sampler=val_sampler,   collate_fn=collate)
+else:
+    train_sampler = None
+    train_loader  = DataLoader(train_subset, batch_size=args.batch_size,
+                               shuffle=True, collate_fn=collate)
+    val_loader    = DataLoader(val_subset, batch_size=args.batch_size,
+                               collate_fn=collate)
+
+# test only on rank 0
+if rank == 0:
+    test_loader = DataLoader(test_subset, batch_size=args.batch_size,
+                             collate_fn=collate)
+
+print0(f"Train: {n_train} | Val: {n_val - n_train} | Test: {len(dataset) - n_val}")
+print0(f"Device: {device}  |  world_size: {world_size}")
+
+# --- Augmentation helpers ---------------------------------------------------
+
+def drop_edge(S, p):
+    if p == 0.0 or not S.is_sparse:
+        return S
+    S = S.coalesce()
+    mask = torch.rand(S._nnz(), device=S.device) > p
+    return torch.sparse_coo_tensor(
+        S.indices()[:, mask], S.values()[mask], S.shape
+    ).coalesce()
+
+
+def random_rotation(atom_feat, dev):
+    Q, _ = torch.linalg.qr(torch.randn(3, 3, device=dev))
+    if torch.det(Q) < 0:
+        Q[:, 0] *= -1
+    out = atom_feat.clone()
+    out[:, 8:11] = atom_feat[:, 8:11] @ Q.T
+    return out
 
 # --- Model ------------------------------------------------------------------
 
@@ -188,7 +254,7 @@ ch = args.channels
 model_kwargs = dict(
     channels_rk0=ch, channels_rk1=ch, channels_rk2=ch, channels_rk3=ch,
     size_hidden_layer1=ch, size_hidden_layer2=ch // 2, output_channels=1,
-    lr=args.lr, batch_norm=False, gradient_clipping=True, normalize=True,
+    lr=args.lr, batch_norm=True, gradient_clipping=True, normalize=False,
     epochs=args.epochs, update_func="leakyrelu", dropout=args.dropout,
 )
 
@@ -287,22 +353,23 @@ class Simple_Att_TNN(nn.Module):
 
 # --- Training ---------------------------------------------------------------
 
-device = ("cuda" if torch.cuda.is_available()
-          else "mps" if torch.backends.mps.is_available()
-          else "cpu")
-print(f"Device: {device}")
+raw_model = Simple_Att_TNN(**model_kwargs).to(device)
+model = DDP(raw_model, device_ids=[local_rank]) if is_ddp else raw_model
 
-model = Simple_Att_TNN(**model_kwargs).to(device)
-optimizer = torch.optim.AdamW(model.parameters(), lr=model.lr)
+optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 criterion = nn.MSELoss()
 
-components = list(dict.fromkeys(n.split('.')[0] for n, _ in model.named_parameters()))
+components = list(dict.fromkeys(n.split('.')[0] for n, _ in raw_model.named_parameters()))
 
-train_losses, val_losses = [], []
+train_losses, val_losses, lrs = [], [], []
 epoch_times = []
 grad_norms_per_component = {c: [] for c in components}
 
-for epoch in range(model.epochs):
+for epoch in range(args.epochs):
+    if train_sampler is not None:
+        train_sampler.set_epoch(epoch)
+
     model.train()
     t0 = time.time()
     total_loss = 0
@@ -312,28 +379,46 @@ for epoch in range(model.epochs):
         atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33, hlgap = [
             b.to(device) for b in batch
         ]
+        atom  = random_rotation(atom, device)
+        icd01 = drop_edge(icd01, args.drop_edge_p)
+        icd02 = drop_edge(icd02, args.drop_edge_p)
+        icd12 = drop_edge(icd12, args.drop_edge_p)
+        icd03 = drop_edge(icd03, args.drop_edge_p)
+        icd13 = drop_edge(icd13, args.drop_edge_p)
+        icd23 = drop_edge(icd23, args.drop_edge_p)
+        adj00 = drop_edge(adj00, args.drop_edge_p)
+        adj11 = drop_edge(adj11, args.drop_edge_p)
+        adj22 = drop_edge(adj22, args.drop_edge_p)
+        adj33 = drop_edge(adj33, args.drop_edge_p)
+
         optimizer.zero_grad()
         out = model(atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33).squeeze(-1)
         loss = criterion(out, hlgap.squeeze(-1))
         loss.backward()
 
-        for c in components:
-            grads = [p.grad.flatten() for n, p in model.named_parameters()
-                     if n.split('.')[0] == c and p.grad is not None]
-            if grads:
-                component_accum[c] += torch.cat(grads).norm().item()
+        if rank == 0:
+            for c in components:
+                grads = [p.grad.flatten() for n, p in raw_model.named_parameters()
+                         if n.split('.')[0] == c and p.grad is not None]
+                if grads:
+                    component_accum[c] += torch.cat(grads).norm().item()
 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item()
 
-    n_batches = len(train_loader)
-    train_losses.append(total_loss / n_batches)
-    for c in components:
-        grad_norms_per_component[c].append(component_accum[c] / n_batches)
+    # average train loss across ranks
+    train_loss_tensor = torch.tensor(total_loss / len(train_loader), device=device)
+    if is_ddp:
+        dist.all_reduce(train_loss_tensor, op=dist.ReduceOp.AVG)
+    train_losses.append(train_loss_tensor.item())
 
+    for c in components:
+        grad_norms_per_component[c].append(component_accum[c] / len(train_loader))
+
+    # validation
     model.eval()
-    val_loss = 0
+    val_loss = 0.0
     with torch.no_grad():
         for batch in val_loader:
             atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33, hlgap = [
@@ -341,81 +426,95 @@ for epoch in range(model.epochs):
             ]
             out = model(atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33).squeeze(-1)
             val_loss += criterion(out, hlgap.squeeze(-1)).item()
-    val_losses.append(val_loss / len(val_loader))
+
+    val_loss_tensor = torch.tensor(val_loss / len(val_loader), device=device)
+    if is_ddp:
+        dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
+    val_losses.append(val_loss_tensor.item())
+
+    scheduler.step()
+    lrs.append(scheduler.get_last_lr()[0])
 
     epoch_time = time.time() - t0
     epoch_times.append(epoch_time)
-    print(f"Epoch {epoch+1:3d}/{model.epochs}  train={train_losses[-1]:.4f}  val={val_losses[-1]:.4f}  ({epoch_time:.1f}s)")
+    print0(f"Epoch {epoch+1:3d}/{args.epochs}  train={train_losses[-1]:.4f}  val={val_losses[-1]:.4f}  lr={lrs[-1]:.2e}  ({epoch_time:.1f}s)")
 
-# --- Test -------------------------------------------------------------------
+# --- Test (rank 0 only) -----------------------------------------------------
 
-model.eval()
-all_preds, all_targets = [], []
-with torch.no_grad():
-    for batch in test_loader:
-        atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33, hlgap = [
-            b.to(device) for b in batch
-        ]
-        out = model(atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33).squeeze(-1)
-        all_preds.append(out.cpu())
-        all_targets.append(hlgap.squeeze(-1).cpu())
+if rank == 0:
+    model.eval()
+    all_preds, all_targets = [], []
+    with torch.no_grad():
+        for batch in test_loader:
+            atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33, hlgap = [
+                b.to(device) for b in batch
+            ]
+            out = model(atom, bond, ring, icd01, icd02, icd12, icd03, icd13, icd23, icd34, adj00, adj11, adj22, adj33).squeeze(-1)
+            all_preds.append(out.cpu())
+            all_targets.append(hlgap.squeeze(-1).cpu())
 
-preds   = torch.cat(all_preds)
-targets = torch.cat(all_targets)
-mae_norm = (preds - targets).abs().mean().item()
-mae_ev   = mae_norm * label_std.item()
-print(f"Test MAE (normalized): {mae_norm:.4f}")
-print(f"Test MAE (eV):         {mae_ev:.4f}")
+    preds   = torch.cat(all_preds)
+    targets = torch.cat(all_targets)
+    mae_norm = (preds - targets).abs().mean().item()
+    mae_ev   = mae_norm * label_std.item()
+    print(f"Test MAE (normalized): {mae_norm:.4f}")
+    print(f"Test MAE (eV):         {mae_ev:.4f}")
 
-# --- Save results -----------------------------------------------------------
+    # --- Save results -------------------------------------------------------
 
-results = {
-    "model_kwargs":             model_kwargs,
-    "datasize":                 args.datasize,
-    "k":                        args.k,
-    "n_train":                  n_train,
-    "n_val":                    n_val - n_train,
-    "n_test":                   len(dataset) - n_val,
-    "label_mean":               label_mean.item(),
-    "label_std":                label_std.item(),
-    "train_losses":             train_losses,
-    "val_losses":               val_losses,
-    "epoch_times":              epoch_times,
-    "grad_norms_per_component": grad_norms_per_component,
-    "test_mae_norm":            mae_norm,
-    "test_mae_ev":              mae_ev,
-}
+    results = {
+        "model_kwargs":             model_kwargs,
+        "datasize":                 args.datasize,
+        "k":                        args.k,
+        "world_size":               world_size,
+        "weight_decay":             args.weight_decay,
+        "drop_edge_p":              args.drop_edge_p,
+        "n_train":                  n_train,
+        "n_val":                    n_val - n_train,
+        "n_test":                   len(dataset) - n_val,
+        "label_mean":               label_mean.item(),
+        "label_std":                label_std.item(),
+        "train_losses":             train_losses,
+        "val_losses":               val_losses,
+        "lrs":                      lrs,
+        "epoch_times":              epoch_times,
+        "grad_norms_per_component": grad_norms_per_component,
+        "test_mae_norm":            mae_norm,
+        "test_mae_ev":              mae_ev,
+    }
 
-Path(args.path).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.path).parent.mkdir(parents=True, exist_ok=True)
 
-json_path = args.path + ".json"
-with open(json_path, "w") as f:
-    json.dump(results, f, indent=2)
-print(f"Results saved to {json_path}")
+    json_path = args.path + ".json"
+    with open(json_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Results saved to {json_path}")
 
-# --- Plots ------------------------------------------------------------------
+    # --- Plots --------------------------------------------------------------
 
-colors = plt.cm.tab20([i / len(components) for i in range(len(components))])
+    colors = plt.cm.tab20([i / len(components) for i in range(len(components))])
+    fig, (ax_loss, ax_grad) = plt.subplots(1, 2, figsize=(16, 5))
 
-fig, (ax_loss, ax_grad) = plt.subplots(1, 2, figsize=(16, 5))
+    ax_loss.plot(train_losses, label="train loss")
+    ax_loss.plot(val_losses,   label="val loss")
+    ax_loss.set_xlabel("Epoch")
+    ax_loss.set_ylabel("MSE loss (normalized)")
+    ax_loss.set_title(f"Loss  —  test MAE={mae_ev:.4f} eV")
+    ax_loss.legend()
+    ax_loss.grid(True, alpha=0.3)
 
-ax_loss.plot(train_losses, label="train loss")
-ax_loss.plot(val_losses,   label="val loss")
-ax_loss.set_xlabel("Epoch")
-ax_loss.set_ylabel("MSE loss (normalized)")
-ax_loss.set_title(f"Loss  —  test MAE={mae_ev:.4f} eV")
-ax_loss.legend()
-ax_loss.grid(True, alpha=0.3)
+    for (c, norms), color in zip(grad_norms_per_component.items(), colors):
+        ax_grad.plot(norms, label=c, color=color)
+    ax_grad.set_xlabel("Epoch")
+    ax_grad.set_ylabel("L2 norm (pre-clip)")
+    ax_grad.set_title("Gradient norm per component")
+    ax_grad.legend(fontsize=7, ncol=2)
+    ax_grad.grid(True, alpha=0.3)
 
-for (c, norms), color in zip(grad_norms_per_component.items(), colors):
-    ax_grad.plot(norms, label=c, color=color)
-ax_grad.set_xlabel("Epoch")
-ax_grad.set_ylabel("L2 norm (pre-clip)")
-ax_grad.set_title("Gradient norm per component")
-ax_grad.legend(fontsize=7, ncol=2)
-ax_grad.grid(True, alpha=0.3)
+    fig.tight_layout()
+    plot_path = args.path + ".png"
+    fig.savefig(plot_path, dpi=150)
+    print(f"Plot saved to {plot_path}")
 
-fig.tight_layout()
-plot_path = args.path + ".png"
-fig.savefig(plot_path, dpi=150)
-print(f"Plot saved to {plot_path}")
+if is_ddp:
+    dist.destroy_process_group()
