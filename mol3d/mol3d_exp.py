@@ -10,6 +10,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from data_loader.mol3d_ct import Mol3dCT
 from ct import CellularTransformer
 
+from rdkit import RDLogger
+RDLogger.DisableLog("rdApp.*")
+
 
 def sparse_block_diag(sparse_list):
     rows, cols, vals = [], [], []
