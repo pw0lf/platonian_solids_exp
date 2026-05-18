@@ -45,25 +45,17 @@ class PCAttention(nn.Module):
         nn.init.xavier_uniform_(self.V)
 
     def forward(self, x_source, x_target, neighborhood):
-        query = x_target @ self.Q
+        query = x_target @ self.Q   # [n_t, p]
         # key = (x_source @ self.K).T
-        key   = x_source @ self.K
-        value = x_source @ self.V
+        key   = x_source @ self.K   # [n_s, p]
+        value = x_source @ self.V   # [n_s, d]
         # out = torch.sparse.softmax((query @ key) * neighborhood, dim=-1) @ value
-        n = neighborhood.coalesce()
-        row_idx, col_idx = n.indices()
         n_t = x_target.size(0)
-        if row_idx.numel() == 0:
-            return torch.zeros(n_t, value.size(1), device=value.device, dtype=value.dtype)
-        scores = (query[row_idx] * key[col_idx]).sum(dim=-1)
-        row_max = torch.full((n_t,), float('-inf'), device=scores.device, dtype=scores.dtype)
-        row_max.scatter_reduce_(0, row_idx, scores, reduce='amax', include_self=True)
-        exp_s = torch.exp(scores - row_max[row_idx].detach())
-        denom = torch.zeros(n_t, device=scores.device, dtype=scores.dtype).scatter_add_(0, row_idx, exp_s)
-        attn  = exp_s / (denom[row_idx] + 1e-9)
-        out = torch.zeros(n_t, value.size(1), device=value.device, dtype=value.dtype)
-        out.scatter_add_(0, row_idx.unsqueeze(1).expand(-1, value.size(1)), attn.unsqueeze(1) * value[col_idx])
-        return out
+        mask = neighborhood.to_dense().bool()              # [n_t, n_s]
+        scores = query @ key.T                             # [n_t, n_s]
+        scores = scores.masked_fill(~mask, float('-inf'))
+        attn = F.softmax(scores, dim=-1).nan_to_num(0.0)  # rows with no neighbours → 0
+        return attn @ value
     
 class PairwiseAttentionTransformer(nn.Module):
     def __init__(self, sources_dims, target_dim, num_heads, p, dropout):
