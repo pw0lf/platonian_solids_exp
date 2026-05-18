@@ -37,6 +37,7 @@ def random_walk(num_nodes, num_edges, num_rings, icd01, icd02, icd12, device):
     idx = torch.arange(n, device=device)
     diag = torch.sparse_coo_tensor(torch.stack([idx, idx]), mask, size=(n, n))
     adj = adj + diag
+    sum = sum + mask  # isolated nodes now have sum=1, preventing 1/0=inf
     D_inv = torch.sparse_coo_tensor(torch.stack([idx, idx]), 1/sum, size=(n, n))
     rw = adj @ D_inv
     return rw

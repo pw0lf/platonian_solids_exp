@@ -45,16 +45,12 @@ class PCAttention(nn.Module):
         nn.init.xavier_uniform_(self.V)
 
     def forward(self, x_source, x_target, neighborhood):
-        query = x_target @ self.Q   # [n_t, p]
-        # key = (x_source @ self.K).T
-        key   = x_source @ self.K   # [n_s, p]
-        value = x_source @ self.V   # [n_s, d]
-        # out = torch.sparse.softmax((query @ key) * neighborhood, dim=-1) @ value
-        n_t = x_target.size(0)
-        mask = neighborhood.to_dense().bool()      # [n_t, n_s]
-        scores = query @ key.T                     # [n_t, n_s]
-        scores = scores.masked_fill(~mask, -1e9)   # large negative keeps softmax finite
-        attn = F.softmax(scores, dim=-1) * mask    # zero non-neighbours after softmax
+        query = x_target @ self.Q
+        key   = x_source @ self.K
+        value = x_source @ self.V
+        mask   = neighborhood.to_dense().bool()
+        scores = (query @ key.T).masked_fill(~mask, -1e9)
+        attn   = F.softmax(scores, dim=-1) * mask
         return attn @ value
     
 class PairwiseAttentionTransformer(nn.Module):
