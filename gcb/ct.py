@@ -58,7 +58,7 @@ class PCAttention(nn.Module):
         scores = (query[row_idx] * key[col_idx]).sum(dim=-1)
         row_max = torch.full((n_t,), float('-inf'), device=scores.device, dtype=scores.dtype)
         row_max.scatter_reduce_(0, row_idx, scores, reduce='amax', include_self=True)
-        exp_s = torch.exp(scores - row_max[row_idx])
+        exp_s = torch.exp(scores - row_max[row_idx].detach())
         denom = torch.zeros(n_t, device=scores.device, dtype=scores.dtype).scatter_add_(0, row_idx, exp_s)
         attn  = exp_s / (denom[row_idx] + 1e-9)
         out = torch.zeros(n_t, value.size(1), device=value.device, dtype=value.dtype)
