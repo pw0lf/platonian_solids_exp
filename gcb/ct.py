@@ -46,9 +46,19 @@ class PCAttention(nn.Module):
 
     def forward(self, x_source, x_target, neighborhood):
         query = x_target @ self.Q
-        key = (x_source @ self.K).T
+        # key = (x_source @ self.K).T
+        key   = x_source @ self.K
         value = x_source @ self.V
-        out = torch.sparse.softmax((query @ key) * neighborhood, dim=-1) @ value
+        # out = torch.sparse.softmax((query @ key) * neighborhood, dim=-1) @ value
+        n = neighborhood.coalesce()
+        row_idx, col_idx = n.indices()
+        scores = (query[row_idx] * key[col_idx]).sum(dim=-1)
+        n_t = x_target.size(0)
+        exp_s = torch.exp(scores - scores.max())
+        denom = torch.zeros(n_t, device=scores.device, dtype=scores.dtype).scatter_add_(0, row_idx, exp_s)
+        attn  = exp_s / (denom[row_idx] + 1e-9)
+        out = torch.zeros(n_t, value.size(1), device=value.device, dtype=value.dtype)
+        out.scatter_add_(0, row_idx.unsqueeze(1).expand(-1, value.size(1)), attn.unsqueeze(1) * value[col_idx])
         return out
     
 class PairwiseAttentionTransformer(nn.Module):
