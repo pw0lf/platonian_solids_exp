@@ -51,10 +51,10 @@ class PCAttention(nn.Module):
         value = x_source @ self.V   # [n_s, d]
         # out = torch.sparse.softmax((query @ key) * neighborhood, dim=-1) @ value
         n_t = x_target.size(0)
-        mask = neighborhood.to_dense().bool()              # [n_t, n_s]
-        scores = query @ key.T                             # [n_t, n_s]
-        scores = scores.masked_fill(~mask, float('-inf'))
-        attn = F.softmax(scores, dim=-1).nan_to_num(0.0)  # rows with no neighbours → 0
+        mask = neighborhood.to_dense().bool()      # [n_t, n_s]
+        scores = query @ key.T                     # [n_t, n_s]
+        scores = scores.masked_fill(~mask, -1e9)   # large negative keeps softmax finite
+        attn = F.softmax(scores, dim=-1) * mask    # zero non-neighbours after softmax
         return attn @ value
     
 class PairwiseAttentionTransformer(nn.Module):
