@@ -65,7 +65,7 @@ if __name__ == "__main__":
     print(f"Device: {device} | use_pe: {args.use_pe} | pe_k: {args.pe_k} | size: {args.size}")
 
     print("Loading dataset...")
-    dataset = Mol3dCT(root="./data", size=args.size, use_pe=args.use_pe, pe_k=args.pe_k)
+    dataset = Mol3dCT(root="./data/data/raw", size=args.size, use_pe=args.use_pe, pe_k=args.pe_k)
     print(f"Loaded: {len(dataset)} | rk0={dataset.rk0_dim} rk1={dataset.rk1_dim} rk2={dataset.rk2_dim}")
 
     n_train = int(0.8 * len(dataset))
