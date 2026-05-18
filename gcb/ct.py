@@ -52,8 +52,10 @@ class PCAttention(nn.Module):
         # out = torch.sparse.softmax((query @ key) * neighborhood, dim=-1) @ value
         n = neighborhood.coalesce()
         row_idx, col_idx = n.indices()
-        scores = (query[row_idx] * key[col_idx]).sum(dim=-1)
         n_t = x_target.size(0)
+        if row_idx.numel() == 0:
+            return torch.zeros(n_t, value.size(1), device=value.device, dtype=value.dtype)
+        scores = (query[row_idx] * key[col_idx]).sum(dim=-1)
         exp_s = torch.exp(scores - scores.max())
         denom = torch.zeros(n_t, device=scores.device, dtype=scores.dtype).scatter_add_(0, row_idx, exp_s)
         attn  = exp_s / (denom[row_idx] + 1e-9)
