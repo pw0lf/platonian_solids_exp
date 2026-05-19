@@ -125,7 +125,8 @@ if __name__ == "__main__":
             scheduler.step()
             train_loss = total_loss / len(train_loader)
             run_result["train_losses"].append(round(train_loss, 4))
-            print(f"Epoch {epoch+1:3d}  train_loss={train_loss:.4f}", end="")
+            lr = scheduler.get_last_lr()[0]
+            print(f"Epoch {epoch+1:3d}  train_loss={train_loss:.4f}  lr={lr:.2e}", end="")
 
             if (epoch + 1) % 5 == 0:
                 model.eval()
@@ -138,7 +139,7 @@ if __name__ == "__main__":
                 val_rmse = criterion(torch.cat(preds), torch.cat(targets)).sqrt().item()
                 run_result["val_rmses"].append(round(val_rmse, 4))
                 print(f"  |  val_rmse={val_rmse:.4f}", end="")
-                if val_rmse < best_val_rmse:
+                if val_rmse < best_val_rmse and val_rmse <= 1.9:
                     best_val_rmse = val_rmse
                     patience_count = 0
                 else:
