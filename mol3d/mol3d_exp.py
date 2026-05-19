@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, random_split
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "gcb"))
 sys.path.insert(0, str(Path(__file__).parent))
-from data_loader.mol3d_ct import Mol3dCT
+from data_loader.mol3d_ct_rand import Mol3dCTRand
 from ct import CellularTransformer
 
 from rdkit import RDLogger
@@ -58,6 +58,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size",   type=int,   default=32)
     parser.add_argument("--warmup_epochs",type=int,   default=5)
     parser.add_argument("--patience",     type=int,   default=10)
+    parser.add_argument("--seed",         type=int,   default=42)
     parser.add_argument("--output",       type=str,   default="results_mol3d.json")
     args = parser.parse_args()
 
@@ -70,7 +71,7 @@ if __name__ == "__main__":
     print(f"Device: {device} | use_pe: {args.use_pe} | pe_k: {args.pe_k} | size: {args.size}")
 
     print("Loading dataset...")
-    dataset = Mol3dCT(root="./data/data/raw", size=args.size, use_pe=args.use_pe, pe_k=args.pe_k)
+    dataset = Mol3dCTRand(root="./data/data/raw", size=args.size, use_pe=args.use_pe, pe_k=args.pe_k, seed=args.seed)
     print(f"Loaded: {len(dataset)} | rk0={dataset.rk0_dim} rk1={dataset.rk1_dim} rk2={dataset.rk2_dim}")
 
     n_train = int(0.8 * len(dataset))
@@ -136,9 +137,12 @@ if __name__ == "__main__":
                         x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
                         out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
                         preds.append((out * y_std + y_mean).cpu()); targets.append(y.cpu())
-                val_rmse = criterion(torch.cat(preds), torch.cat(targets)).sqrt().item()
+                p, t = torch.cat(preds), torch.cat(targets)
+                val_rmse = criterion(p, t).sqrt().item()
+                val_mae  = (p - t).abs().mean().item()
                 run_result["val_rmses"].append(round(val_rmse, 4))
-                print(f"  |  val_rmse={val_rmse:.4f}", end="")
+                run_result.setdefault("val_maes", []).append(round(val_mae, 4))
+                print(f"  |  val_rmse={val_rmse:.4f}  val_mae={val_mae:.4f}", end="")
                 if val_rmse < best_val_rmse and val_rmse <= 1.9:
                     best_val_rmse = val_rmse
                     patience_count = 0
@@ -158,13 +162,17 @@ if __name__ == "__main__":
                 x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
                 out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
                 preds.append((out * y_std + y_mean).cpu()); targets.append(y.cpu())
-        test_rmse = criterion(torch.cat(preds), torch.cat(targets)).sqrt().item()
+        p, t = torch.cat(preds), torch.cat(targets)
+        test_rmse = criterion(p, t).sqrt().item()
+        test_mae  = (p - t).abs().mean().item()
         run_result["test_rmse"] = round(test_rmse, 4)
-        print(f"Test RMSE: {test_rmse:.4f}")
+        run_result["test_mae"]  = round(test_mae, 4)
+        print(f"Test RMSE: {test_rmse:.4f}  MAE: {test_mae:.4f}")
         results["runs"].append(run_result)
 
     results["mean_test_rmse"] = round(sum(r["test_rmse"] for r in results["runs"]) / 3, 4)
-    print(f"\nMean test RMSE: {results['mean_test_rmse']:.4f}")
+    results["mean_test_mae"]  = round(sum(r["test_mae"]  for r in results["runs"]) / 3, 4)
+    print(f"\nMean test RMSE: {results['mean_test_rmse']:.4f}  MAE: {results['mean_test_mae']:.4f}")
 
     out_path = Path(args.output)
     if out_path.exists():
