@@ -96,12 +96,12 @@ if __name__ == "__main__":
     for run in range(3):
         print(f"\n--- Run {run + 1}/3 ---")
         model = make_model(dataset.rk0_dim, dataset.rk1_dim, dataset.rk2_dim).to(device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3,
+        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4,
                                       betas=(0.9, 0.999), eps=1e-8)
         warmup = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=1e-3, end_factor=1.0, total_iters=args.warmup_epochs)
         cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=args.epochs - args.warmup_epochs)
+            optimizer, T_max=args.epochs - args.warmup_epochs, eta_min=1e-4)
         scheduler = torch.optim.lr_scheduler.SequentialLR(
             optimizer, schedulers=[warmup, cosine], milestones=[args.warmup_epochs])
 
