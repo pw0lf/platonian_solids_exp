@@ -43,20 +43,22 @@ def collate(batch):
 def make_model(rk0_dim, rk1_dim, rk2_dim):
     return CellularTransformer(
         rk0_dim=rk0_dim, rk1_dim=rk1_dim, rk2_dim=rk2_dim,
-        output_dim=1, num_layers=4, hidden_dim=64, num_heads=4,
+        output_dim=1, num_layers=8, hidden_dim=64, num_heads=8,
         hidden_dim_per_head=16, att_dropout=0.1, emb_dropout=0.1,
-        readout_dropout=0.1, num_readout_hidden_layers=1,
+        readout_dropout=0.1, num_readout_hidden_layers=3,
     )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--use_pe",    action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--pe_k",      type=int,   default=5)
-    parser.add_argument("--size",      type=int,   default=10000)
-    parser.add_argument("--epochs",    type=int,   default=50)
-    parser.add_argument("--batch_size",type=int,   default=32)
-    parser.add_argument("--output",    type=str,   default="results_mol3d.json")
+    parser.add_argument("--use_pe",       action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pe_k",         type=int,   default=5)
+    parser.add_argument("--size",         type=int,   default=10000)
+    parser.add_argument("--epochs",       type=int,   default=50)
+    parser.add_argument("--batch_size",   type=int,   default=32)
+    parser.add_argument("--warmup_epochs",type=int,   default=5)
+    parser.add_argument("--patience",     type=int,   default=10)
+    parser.add_argument("--output",       type=str,   default="results_mol3d.json")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -88,8 +90,19 @@ if __name__ == "__main__":
     for run in range(3):
         print(f"\n--- Run {run + 1}/3 ---")
         model = make_model(dataset.rk0_dim, dataset.rk1_dim, dataset.rk2_dim).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3,
+                                      betas=(0.9, 0.999), eps=1e-8)
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=1e-3, end_factor=1.0, total_iters=args.warmup_epochs)
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epochs - args.warmup_epochs)
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup, cosine], milestones=[args.warmup_epochs])
+
         run_result = {"run": run + 1, "train_losses": [], "val_rmses": []}
+        best_val_rmse = float("inf")
+        patience_count = 0
+        stop = False
 
         for epoch in range(args.epochs):
             model.train()
@@ -103,6 +116,7 @@ if __name__ == "__main__":
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 optimizer.step()
                 total_loss += loss.item()
+            scheduler.step()
             train_loss = total_loss / len(train_loader)
             run_result["train_losses"].append(round(train_loss, 4))
             print(f"Epoch {epoch+1:3d}  train_loss={train_loss:.4f}", end="")
@@ -118,7 +132,17 @@ if __name__ == "__main__":
                 val_rmse = criterion(torch.cat(preds), torch.cat(targets)).sqrt().item()
                 run_result["val_rmses"].append(round(val_rmse, 4))
                 print(f"  |  val_rmse={val_rmse:.4f}", end="")
+                if val_rmse < best_val_rmse:
+                    best_val_rmse = val_rmse
+                    patience_count = 0
+                else:
+                    patience_count += 1
+                    if patience_count >= args.patience:
+                        print(f"  |  early stop", end="")
+                        stop = True
             print()
+            if stop:
+                break
 
         model.eval()
         preds, targets = [], []
