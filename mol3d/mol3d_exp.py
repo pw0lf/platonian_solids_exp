@@ -83,6 +83,12 @@ if __name__ == "__main__":
     test_loader  = DataLoader(test_set,  batch_size=args.batch_size, shuffle=False, collate_fn=collate)
     print(f"Train: {n_train} | Val: {n_val} | Test: {n_test}")
 
+    # z-score normalization fitted on train labels only
+    train_labels = torch.stack([dataset[i][-1] for i in train_set.indices])
+    y_mean = train_labels.mean().to(device)
+    y_std  = train_labels.std().to(device)
+    print(f"Label mean={y_mean.item():.4f}  std={y_std.item():.4f}")
+
     criterion = nn.MSELoss()
     results = {"use_pe": args.use_pe, "pe_k": args.pe_k, "size": args.size,
                "epochs": args.epochs, "runs": []}
@@ -111,7 +117,7 @@ if __name__ == "__main__":
                 x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
                 optimizer.zero_grad()
                 out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
-                loss = criterion(out, y)
+                loss = criterion(out, (y - y_mean) / y_std)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 optimizer.step()
@@ -128,7 +134,7 @@ if __name__ == "__main__":
                     for batch in val_loader:
                         x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
                         out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
-                        preds.append(out.cpu()); targets.append(y.cpu())
+                        preds.append((out * y_std + y_mean).cpu()); targets.append(y.cpu())
                 val_rmse = criterion(torch.cat(preds), torch.cat(targets)).sqrt().item()
                 run_result["val_rmses"].append(round(val_rmse, 4))
                 print(f"  |  val_rmse={val_rmse:.4f}", end="")
@@ -150,7 +156,7 @@ if __name__ == "__main__":
             for batch in test_loader:
                 x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
                 out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
-                preds.append(out.cpu()); targets.append(y.cpu())
+                preds.append((out * y_std + y_mean).cpu()); targets.append(y.cpu())
         test_rmse = criterion(torch.cat(preds), torch.cat(targets)).sqrt().item()
         run_result["test_rmse"] = round(test_rmse, 4)
         print(f"Test RMSE: {test_rmse:.4f}")
