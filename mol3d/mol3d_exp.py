@@ -58,6 +58,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size",   type=int,   default=32)
     parser.add_argument("--warmup_epochs",type=int,   default=5)
     parser.add_argument("--patience",     type=int,   default=10)
+    parser.add_argument("--early_stopping", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed",         type=int,   default=42)
     parser.add_argument("--output",       type=str,   default="results_mol3d.json")
     args = parser.parse_args()
@@ -146,7 +147,7 @@ if __name__ == "__main__":
                 if val_rmse < best_val_rmse and val_rmse <= 1.9:
                     best_val_rmse = val_rmse
                     patience_count = 0
-                else:
+                elif args.early_stopping:
                     patience_count += 1
                     if patience_count >= args.patience:
                         print(f"  |  early stop", end="")
