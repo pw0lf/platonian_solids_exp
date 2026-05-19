@@ -79,8 +79,9 @@ class PairwiseAttentionTransformer(nn.Module):
         x_4_list = [x_t1 + x_3 for x_3 in x_3_list]
         x_5_list = [ln(x_5) for ln,x_5 in zip(self.layer_norms2,x_4_list)]
         x_6_list = [self.dropout(ffn2(self.dropout(F.relu(ffn1(x_5))))) for x_5, ffn1, ffn2 in zip(x_5_list, self.ffn1, self.ffn2)]
+        x_7_list = [x_4 + x_6 for x_4,x_6 in zip(x_4_list,x_6_list)]
 
-        return torch.stack(x_6_list).sum(dim=0)
+        return torch.stack(x_7_list).sum(dim=0)
 
 
 class CellularTransformer(nn.Module):
@@ -124,7 +125,7 @@ class CellularTransformer(nn.Module):
             x = self.readout_dropout_layer(F.relu(layer(x)))
         x = self.readout_layers[-1](x)
         graphs = x.split(node_counts.tolist(), dim=0)
-        return torch.stack([g.sum(dim=0) for g in graphs])
+        return torch.stack([g.mean(dim=0) for g in graphs])
 
     def forward(self, x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts):
         #embedding
