@@ -166,6 +166,13 @@ if __name__ == "__main__":
     results["mean_test_rmse"] = round(sum(r["test_rmse"] for r in results["runs"]) / 3, 4)
     print(f"\nMean test RMSE: {results['mean_test_rmse']:.4f}")
 
-    with open(args.output, "w") as f:
+    out_path = Path(args.output)
+    if out_path.exists():
+        stem, suffix = out_path.stem, out_path.suffix
+        i = 1
+        while out_path.exists():
+            out_path = out_path.with_name(f"{stem}_{i}{suffix}")
+            i += 1
+    with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"Saved to {args.output}")
+    print(f"Saved to {out_path}")
