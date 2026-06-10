@@ -44,7 +44,7 @@ def build_model(rk0_dim, rk1_dim, rk2_dim, hp):
 
 def sample_hp(trial):
     return {
-        "epochs":                    trial.suggest_int("epochs", 10, 100, step=10),
+        "epochs":                    trial.suggest_int("epochs", 40, 200, step=10),
         "num_layers":               trial.suggest_int("num_layers", 2, 8),
         "hidden_dim":                trial.suggest_categorical("hidden_dim", [32, 64, 128]),
         "num_heads":                 trial.suggest_categorical("num_heads", [2, 4, 8]),
@@ -105,6 +105,23 @@ def train_and_eval(hp, args, dataset, train_idx, val_idx, y_mean, y_std, device,
                 break
 
     return model, best_val_rmse
+
+
+def evaluate_full(model, loader, device, y_mean, y_std):
+    model.eval()
+    preds, targets = [], []
+    with torch.no_grad():
+        for batch in loader:
+            x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
+            out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
+            preds.append((out * y_std + y_mean).cpu()); targets.append(y.cpu())
+    p, t = torch.cat(preds), torch.cat(targets)
+    rmse = ((p - t) ** 2).mean().sqrt().item()
+    mae = (p - t).abs().mean().item()
+    ss_res = ((t - p) ** 2).sum()
+    ss_tot = ((t - t.mean()) ** 2).sum()
+    r2 = (1 - ss_res / ss_tot).item()
+    return rmse, mae, r2
 
 
 def make_objective(args, dataset, train_idx, val_idx, y_mean, y_std, device):
@@ -212,7 +229,6 @@ if __name__ == "__main__":
     best_model, best_val_rmse = train_and_eval(study.best_params, args, dataset,
                                                  train_idx, val_idx, y_mean, y_std, device)
 
-    criterion = nn.MSELoss()
     c60_test_idx = [i for i, s in enumerate(sizes) if s == 60]
     c70_test_set     = FullereneComplexDataset("c70_non_IPR", root=str(FULLERENE_ROOT), target="Eb",
                                                  use_pe=args.use_pe, pe_k=args.pe_k)
@@ -230,8 +246,8 @@ if __name__ == "__main__":
         ("c72_100_IPR", DataLoader(c72_100_test_set, batch_size=study.best_params["batch_size"],
                                     shuffle=False, collate_fn=collate)),
     ]:
-        rmse, mae = evaluate(best_model, loader, device, y_mean, y_std, criterion)
-        test_results[name] = {"rmse": round(rmse, 4), "mae": round(mae, 4)}
-        print(f"Test [{name}]  RMSE: {rmse:.4f}  MAE: {mae:.4f}")
+        rmse, mae, r2 = evaluate_full(best_model, loader, device, y_mean, y_std)
+        test_results[name] = {"rmse": round(rmse, 4), "mae": round(mae, 4), "r2": round(r2, 4)}
+        print(f"Test [{name}]  RMSE: {rmse:.4f}  MAE: {mae:.4f}  R2: {r2:.4f}")
 
     save_results(final_eval=test_results)
