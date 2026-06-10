@@ -1,4 +1,5 @@
 import argparse
+import gc
 import json
 import sys
 import optuna
@@ -55,6 +56,17 @@ def collate(batch):
     )
 
 
+def make_loader_kwargs(args, device):
+    kwargs = dict(
+        num_workers=args.num_workers,
+        pin_memory=(device == "cuda" and args.pin_memory),
+        persistent_workers=args.num_workers > 0,
+    )
+    if args.num_workers > 0:
+        kwargs["prefetch_factor"] = 2
+    return kwargs
+
+
 def build_model(rk0_dim, rk1_dim, rk2_dim, hp):
     return CellularTransformer(
         rk0_dim=rk0_dim, rk1_dim=rk1_dim, rk2_dim=rk2_dim, output_dim=1,
@@ -84,8 +96,9 @@ def sample_hp(trial):
 
 def train_and_eval(hp, args, dataset, train_idx, val_idx, y_mean, y_std, device, trial=None):
     epochs = hp["epochs"]
-    train_loader = DataLoader(Subset(dataset, train_idx), batch_size=hp["batch_size"], shuffle=True,  collate_fn=collate)
-    val_loader   = DataLoader(Subset(dataset, val_idx),   batch_size=hp["batch_size"], shuffle=False, collate_fn=collate)
+    loader_kwargs = make_loader_kwargs(args, device)
+    train_loader = DataLoader(Subset(dataset, train_idx), batch_size=hp["batch_size"], shuffle=True,  collate_fn=collate, **loader_kwargs)
+    val_loader   = DataLoader(Subset(dataset, val_idx),   batch_size=hp["batch_size"], shuffle=False, collate_fn=collate, **loader_kwargs)
 
     model = build_model(dataset.rk0_dim, dataset.rk1_dim, dataset.rk2_dim, hp).to(device)
     criterion = nn.MSELoss()
@@ -104,7 +117,7 @@ def train_and_eval(hp, args, dataset, train_idx, val_idx, y_mean, y_std, device,
         model.train()
         for batch in train_loader:
             x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
             loss = criterion(out, (y - y_mean) / y_std)
             loss.backward()
@@ -152,8 +165,13 @@ def make_objective(args, dataset, train_idx, val_idx, y_mean, y_std, device):
     def objective(trial):
         torch.manual_seed(args.seed)
         hp = sample_hp(trial)
-        _, best_val_rmse = train_and_eval(hp, args, dataset, train_idx, val_idx, y_mean, y_std, device, trial=trial)
-        return best_val_rmse
+        try:
+            _, best_val_rmse = train_and_eval(hp, args, dataset, train_idx, val_idx, y_mean, y_std, device, trial=trial)
+            return best_val_rmse
+        finally:
+            gc.collect()
+            if device == "cuda":
+                torch.cuda.empty_cache()
     return objective
 
 
@@ -171,6 +189,9 @@ if __name__ == "__main__":
     parser.add_argument("--study_name",   type=str,   default=None)
     parser.add_argument("--storage",      type=str,   default=None,
                          help="optuna storage URL, e.g. sqlite:///fullerene_hp.db (enables resuming)")
+    parser.add_argument("--num_workers",  type=int,   default=4, help="DataLoader worker processes for batch collation")
+    parser.add_argument("--pin_memory",   action=argparse.BooleanOptionalAction, default=False,
+                         help="pin host memory for faster H2D transfer (cuda only)")
     parser.add_argument("--output",       type=str,   default="hp_results_fullerene.json")
     args = parser.parse_args()
 
@@ -181,6 +202,9 @@ if __name__ == "__main__":
     else:
         device = "cpu"
     print(f"Device: {device} | use_pe: {args.use_pe} | pe_k: {args.pe_k} | seed: {args.seed}")
+
+    if device == "cuda":
+        torch.set_float32_matmul_precision("high")
 
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
@@ -259,16 +283,17 @@ if __name__ == "__main__":
     c72_100_test_set = FullereneComplexDataset("c72_100_IPR", root=str(FULLERENE_ROOT), target="Eb",
                                                  use_pe=args.use_pe, pe_k=args.pe_k)
 
+    eval_loader_kwargs = make_loader_kwargs(args, device)
     test_results = {}
     for name, loader in [
         ("val",         DataLoader(Subset(dataset, val_idx), batch_size=study.best_params["batch_size"],
-                                    shuffle=False, collate_fn=collate)),
+                                    shuffle=False, collate_fn=collate, **eval_loader_kwargs)),
         ("c60",         DataLoader(Subset(dataset, c60_test_idx), batch_size=study.best_params["batch_size"],
-                                    shuffle=False, collate_fn=collate)),
+                                    shuffle=False, collate_fn=collate, **eval_loader_kwargs)),
         ("c70_non_IPR", DataLoader(c70_test_set, batch_size=study.best_params["batch_size"],
-                                    shuffle=False, collate_fn=collate)),
+                                    shuffle=False, collate_fn=collate, **eval_loader_kwargs)),
         ("c72_100_IPR", DataLoader(c72_100_test_set, batch_size=study.best_params["batch_size"],
-                                    shuffle=False, collate_fn=collate)),
+                                    shuffle=False, collate_fn=collate, **eval_loader_kwargs)),
     ]:
         rmse, mae, r2 = evaluate_full(best_model, loader, device, y_mean, y_std)
         test_results[name] = {"rmse": round(rmse, 4), "mae": round(mae, 4), "r2": round(r2, 4)}
