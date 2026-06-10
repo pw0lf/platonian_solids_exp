@@ -13,8 +13,6 @@ sys.path.insert(0, str(FULLERENE_ROOT))
 from fullerene_complex_dataset import FullereneComplexDataset
 from ct import CellularTransformer
 
-from fullerene_exp import collate, evaluate
-
 from rdkit import RDLogger
 RDLogger.DisableLog("rdApp.*")
 
@@ -29,6 +27,32 @@ SPLIT_VAL_SIZES = [
     {58},                   # split 4: val = C58
 ]
 TRAIN_VAL_SIZES = set(range(20, 59, 2))  # C20-C58
+
+
+def sparse_block_diag(sparse_list):
+    rows, cols, vals = [], [], []
+    row_offset = col_offset = 0
+    for S in sparse_list:
+        S = S.coalesce()
+        i, v = S.indices(), S.values()
+        rows.append(i[0] + row_offset); cols.append(i[1] + col_offset); vals.append(v)
+        row_offset += S.shape[0]; col_offset += S.shape[1]
+    return torch.sparse_coo_tensor(
+        torch.stack([torch.cat(rows), torch.cat(cols)]), torch.cat(vals),
+        size=(row_offset, col_offset))
+
+
+def collate(batch):
+    x_0, x_1, x_2, icd01, icd02, icd12, adj00, adj11, adj22, y = zip(*batch)
+    return (
+        torch.cat(x_0),
+        torch.cat(x_1),
+        torch.cat(x_2),
+        sparse_block_diag(adj00), sparse_block_diag(icd01), sparse_block_diag(adj11),
+        sparse_block_diag(icd02), sparse_block_diag(icd12), sparse_block_diag(adj22),
+        torch.tensor([x.shape[0] for x in x_0], dtype=torch.long),
+        torch.stack(y),
+    )
 
 
 def build_model(rk0_dim, rk1_dim, rk2_dim, hp):
@@ -89,7 +113,7 @@ def train_and_eval(hp, args, dataset, train_idx, val_idx, y_mean, y_std, device,
         scheduler.step()
 
         if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
-            val_rmse, _ = evaluate(model, val_loader, device, y_mean, y_std, criterion)
+            val_rmse, _, _ = evaluate_full(model, val_loader, device, y_mean, y_std)
             if val_rmse < best_val_rmse:
                 best_val_rmse = val_rmse
                 patience_count = 0
