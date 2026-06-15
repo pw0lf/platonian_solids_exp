@@ -134,6 +134,77 @@ def make_ring_features(mol, sssr):
     return torch.tensor(feats, dtype=torch.float32)
 
 
+PENTAGON_COUNT_ONEHOT = {3: [1, 0, 0, 0], 2: [0, 1, 0, 0], 1: [0, 0, 1, 0], 0: [0, 0, 0, 1]}
+
+# Fujita ring-pattern classes I-IX -> index 0-8, from the 4-char P/H pattern
+# of a bond's four neighboring faces (P = pentagon-side, H = hexagon-side).
+BOND_RING_TYPE = {
+    "HHHH": 0, "HHPH": 1, "PHHH": 1, "HPHH": 2, "HHHP": 2,
+    "HPPH": 3, "PHHP": 3, "PPHH": 3, "HHPP": 3,
+    "PHPH": 4, "HPHP": 5, "HPPP": 6, "PPHP": 6,
+    "PPPH": 7, "PHPP": 7, "PPPP": 8,
+}
+
+
+def make_pentagon_features(mol, sssr):
+    """One-hot count (0-3) of pentagonal faces among each atom's faces."""
+    ring_sizes = [[] for _ in range(mol.GetNumAtoms())]
+    for ring in sssr:
+        for atom_idx in ring:
+            ring_sizes[atom_idx].append(len(ring))
+    feats = []
+    for sizes in ring_sizes:
+        sizes = sizes + [6] * max(0, 3 - len(sizes))
+        feats.append(PENTAGON_COUNT_ONEHOT[sum(1 for s in sizes[:3] if s == 5)])
+    return torch.tensor(feats, dtype=torch.float32)
+
+
+def _nbrs(mol, atom_idx, exclude_idx):
+    return [n.GetIdx() for n in mol.GetAtomWithIdx(atom_idx).GetNeighbors() if n.GetIdx() != exclude_idx]
+
+
+def make_ring_type_features(mol):
+    """One-hot Fujita ring-pattern (I-IX) classification of each bond's four neighboring faces."""
+    if mol.GetNumBonds() == 0:
+        return torch.zeros(0, 9, dtype=torch.float32)
+    dist = Chem.Get3DDistanceMatrix(mol)
+    feats = []
+    for bond in mol.GetBonds():
+        n0, n1 = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        A, B = _nbrs(mol, n0, n1)
+        C, D = _nbrs(mol, n1, n0)
+        if dist[A][C] > dist[A][D]:
+            C, D = D, C
+
+        A1, A2 = _nbrs(mol, A, n0)
+        if dist[A1][C] > dist[A2][C]:
+            A1, A2 = A2, A1
+
+        C1, C2 = _nbrs(mol, C, n1)
+        if dist[C1][A] > dist[C2][A]:
+            C1, C2 = C2, C1
+        ring1 = "P" if A1 == C1 else "H"
+
+        D1, D2 = _nbrs(mol, D, n1)
+        if dist[D1][B] > dist[D2][B]:
+            D1, D2 = D2, D1
+        C2_a, C2_b = _nbrs(mol, C2, C)
+        ring2 = "P" if D2 in (C2_a, C2_b) else "H"
+
+        B1, B2 = _nbrs(mol, B, n0)
+        if dist[B1][D] > dist[B2][D]:
+            B1, B2 = B2, B1
+        ring3 = "P" if B1 == D1 else "H"
+
+        B2_a, B2_b = _nbrs(mol, B2, B)
+        ring4 = "P" if A2 in (B2_a, B2_b) else "H"
+
+        onehot = [0] * 9
+        onehot[BOND_RING_TYPE[ring1 + ring2 + ring3 + ring4]] = 1
+        feats.append(onehot)
+    return torch.tensor(feats, dtype=torch.float32)
+
+
 def make_matrices(mol, sssr):
     n_atoms, n_bonds, n_rings = mol.GetNumAtoms(), mol.GetNumBonds(), len(sssr)
 
@@ -182,8 +253,8 @@ def make_matrices(mol, sssr):
 def _process_mol(mol, target, use_pe, pe_k):
     sssr = list(Chem.GetSymmSSSR(mol))
     icd01, icd02, icd12, adj00, adj11, adj22 = make_matrices(mol, sssr)
-    x_0 = make_atom_features(mol)
-    x_1 = make_bond_features(mol, sssr)
+    x_0 = torch.cat([make_atom_features(mol), make_pentagon_features(mol, sssr)], dim=1)
+    x_1 = torch.cat([make_bond_features(mol, sssr), make_ring_type_features(mol)], dim=1)
     x_2 = make_ring_features(mol, sssr)
     if use_pe:
         n_atoms, n_bonds, n_rings = x_0.shape[0], x_1.shape[0], x_2.shape[0]
