@@ -148,6 +148,14 @@ if __name__ == "__main__":
                 ckpt_path = f"checkpoint_run{run+1}_epoch{epoch+1}.pt"
                 torch.save(model.state_dict(), ckpt_path)
 
+                pred_path = f"predictions_run{run+1}_epoch{epoch+1}.json"
+                with open(pred_path, "w") as f:
+                    json.dump({
+                        "indices": list(test_set.indices),
+                        "preds":   p.squeeze(-1).tolist(),
+                        "trues":   t.squeeze(-1).tolist(),
+                    }, f)
+
                 run_result["checkpoints"].append({
                     "epoch": epoch + 1,
                     "test_rmse": round(test_rmse, 4),
