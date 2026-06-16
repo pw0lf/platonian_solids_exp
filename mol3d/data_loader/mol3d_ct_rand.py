@@ -1,4 +1,5 @@
 import sys
+import bisect
 import json
 import random
 import torch
@@ -172,7 +173,7 @@ def _process_mol(mol, properties_df, global_idx, use_pe, pe_k):
 
 
 class Mol3dCTRand(Dataset):
-    def __init__(self, root=".", size=10000, use_pe=True, pe_k=5, seed=42):
+    def __init__(self, root=".", size=10000, use_pe=True, pe_k=5, seed=42, per_file_size=None):
         root = Path(root)
         rng = random.Random(seed)
 
@@ -181,8 +182,20 @@ class Mol3dCTRand(Dataset):
         split = json.load(open(split_path))
         all_valid = split["train"] + split["valid"] + split["test"]
 
-        # sample without replacement
-        sampled = sorted(rng.sample(all_valid, min(size, len(all_valid))))
+        if per_file_size is not None:
+            # sort once, then use binary search to slice per-file subsets
+            all_valid_sorted = sorted(all_valid)
+            sampled = []
+            boundaries = [g_start for _, g_start, _ in _FILES] + [_FILES[-1][2]]
+            for i, (fname, _, _) in enumerate(_FILES):
+                lo = bisect.bisect_left(all_valid_sorted, boundaries[i])
+                hi = bisect.bisect_left(all_valid_sorted, boundaries[i + 1])
+                file_valid = all_valid_sorted[lo:hi]
+                sampled.extend(rng.sample(file_valid, min(per_file_size, len(file_valid))))
+            sampled = sorted(sampled)
+        else:
+            # sample without replacement across full pool
+            sampled = sorted(rng.sample(all_valid, min(size, len(all_valid))))
 
         properties_df = pd.read_csv(root / "properties.csv")
 

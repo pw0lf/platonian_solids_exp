@@ -43,24 +43,26 @@ def collate(batch):
 def make_model(rk0_dim, rk1_dim, rk2_dim):
     return CellularTransformer(
         rk0_dim=rk0_dim, rk1_dim=rk1_dim, rk2_dim=rk2_dim,
-        output_dim=1, num_layers=8, hidden_dim=64, num_heads=8,
-        hidden_dim_per_head=16, att_dropout=0.1, emb_dropout=0.1,
-        readout_dropout=0.1, num_readout_hidden_layers=3,
+        output_dim=1, num_layers=6, hidden_dim=128, num_heads=4,
+        hidden_dim_per_head=8, att_dropout=0.007223573743289108,
+        emb_dropout=0.2889364748304471, readout_dropout=0.1262504279429404,
+        num_readout_hidden_layers=2,
     )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--use_pe",       action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--pe_k",         type=int,   default=5)
-    parser.add_argument("--size",         type=int,   default=10000)
-    parser.add_argument("--epochs",       type=int,   default=50)
-    parser.add_argument("--batch_size",   type=int,   default=32)
-    parser.add_argument("--warmup_epochs",type=int,   default=5)
-    parser.add_argument("--patience",     type=int,   default=10)
-    parser.add_argument("--early_stopping", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--seed",         type=int,   default=42)
-    parser.add_argument("--output",       type=str,   default="results_mol3d.json")
+    parser.add_argument("--use_pe",          action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pe_k",            type=int,   default=5)
+    parser.add_argument("--per_file_size",   type=int,   default=250000)
+    parser.add_argument("--epochs",          type=int,   default=400)
+    parser.add_argument("--batch_size",      type=int,   default=16)
+    parser.add_argument("--lr",              type=float, default=0.000965256564762386)
+    parser.add_argument("--warmup_epochs",   type=int,   default=5)
+    parser.add_argument("--checkpoint_every",type=int,   default=50)
+    parser.add_argument("--seed",            type=int,   default=42)
+    parser.add_argument("--datapath",        type=str,   default="./data/data/raw")
+    parser.add_argument("--output",          type=str,   default="results_mol3d.json")
     args = parser.parse_args()
 
     if torch.cuda.is_available():
@@ -69,21 +71,22 @@ if __name__ == "__main__":
         device = "mps"
     else:
         device = "cpu"
-    print(f"Device: {device} | use_pe: {args.use_pe} | pe_k: {args.pe_k} | size: {args.size}")
+    print(f"Device: {device} | use_pe: {args.use_pe} | pe_k: {args.pe_k} | per_file_size: {args.per_file_size}")
 
     print("Loading dataset...")
-    dataset = Mol3dCTRand(root="./data/data/raw", size=args.size, use_pe=args.use_pe, pe_k=args.pe_k, seed=args.seed)
+    dataset = Mol3dCTRand(
+        root=args.datapath, per_file_size=args.per_file_size,
+        use_pe=args.use_pe, pe_k=args.pe_k, seed=args.seed,
+    )
     print(f"Loaded: {len(dataset)} | rk0={dataset.rk0_dim} rk1={dataset.rk1_dim} rk2={dataset.rk2_dim}")
 
     n_train = int(0.8 * len(dataset))
-    n_val   = int(0.1 * len(dataset))
-    n_test  = len(dataset) - n_train - n_val
-    train_set, val_set, test_set = random_split(dataset, [n_train, n_val, n_test],
-                                                 generator=torch.Generator().manual_seed(42))
+    n_test  = len(dataset) - n_train
+    train_set, test_set = random_split(dataset, [n_train, n_test],
+                                       generator=torch.Generator().manual_seed(args.seed))
     train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True,  collate_fn=collate)
-    val_loader   = DataLoader(val_set,   batch_size=args.batch_size, shuffle=False, collate_fn=collate)
     test_loader  = DataLoader(test_set,  batch_size=args.batch_size, shuffle=False, collate_fn=collate)
-    print(f"Train: {n_train} | Val: {n_val} | Test: {n_test}")
+    print(f"Train: {n_train} | Test: {n_test}")
 
     # z-score normalization fitted on train labels only
     train_labels = torch.stack([dataset[i][-1] for i in train_set.indices])
@@ -92,25 +95,24 @@ if __name__ == "__main__":
     print(f"Label mean={y_mean.item():.4f}  std={y_std.item():.4f}")
 
     criterion = nn.MSELoss()
-    results = {"use_pe": args.use_pe, "pe_k": args.pe_k, "size": args.size,
-               "epochs": args.epochs, "runs": []}
+    results = {
+        "use_pe": args.use_pe, "pe_k": args.pe_k, "per_file_size": args.per_file_size,
+        "epochs": args.epochs, "runs": [],
+    }
 
     for run in range(3):
         print(f"\n--- Run {run + 1}/3 ---")
         model = make_model(dataset.rk0_dim, dataset.rk1_dim, dataset.rk2_dim).to(device)
-        optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4,
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                       betas=(0.9, 0.999), eps=1e-8)
         warmup = torch.optim.lr_scheduler.LinearLR(
             optimizer, start_factor=1e-3, end_factor=1.0, total_iters=args.warmup_epochs)
         cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=args.epochs - args.warmup_epochs, eta_min=1e-4)
+            optimizer, T_max=max(args.epochs - args.warmup_epochs, 1), eta_min=1e-4)
         scheduler = torch.optim.lr_scheduler.SequentialLR(
             optimizer, schedulers=[warmup, cosine], milestones=[args.warmup_epochs])
 
-        run_result = {"run": run + 1, "train_losses": [], "val_rmses": []}
-        best_val_rmse = float("inf")
-        patience_count = 0
-        stop = False
+        run_result = {"run": run + 1, "train_losses": [], "checkpoints": []}
 
         for epoch in range(args.epochs):
             model.train()
@@ -130,45 +132,32 @@ if __name__ == "__main__":
             lr = scheduler.get_last_lr()[0]
             print(f"Epoch {epoch+1:3d}  train_loss={train_loss:.4f}  lr={lr:.2e}", end="")
 
-            if (epoch + 1) % 5 == 0:
+            if (epoch + 1) % args.checkpoint_every == 0 or epoch == args.epochs - 1:
                 model.eval()
                 preds, targets = [], []
                 with torch.no_grad():
-                    for batch in val_loader:
+                    for batch in test_loader:
                         x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
                         out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
                         preds.append((out * y_std + y_mean).cpu()); targets.append(y.cpu())
                 p, t = torch.cat(preds), torch.cat(targets)
-                val_rmse = criterion(p, t).sqrt().item()
-                val_mae  = (p - t).abs().mean().item()
-                run_result["val_rmses"].append(round(val_rmse, 4))
-                run_result.setdefault("val_maes", []).append(round(val_mae, 4))
-                print(f"  |  val_rmse={val_rmse:.4f}  val_mae={val_mae:.4f}", end="")
-                if val_rmse < best_val_rmse and val_rmse <= 1.9:
-                    best_val_rmse = val_rmse
-                    patience_count = 0
-                elif args.early_stopping:
-                    patience_count += 1
-                    if patience_count >= args.patience:
-                        print(f"  |  early stop", end="")
-                        stop = True
-            print()
-            if stop:
-                break
+                test_rmse = criterion(p, t).sqrt().item()
+                test_mae  = (p - t).abs().mean().item()
+                print(f"  |  test_rmse={test_rmse:.4f}  test_mae={test_mae:.4f}", end="")
 
-        model.eval()
-        preds, targets = [], []
-        with torch.no_grad():
-            for batch in test_loader:
-                x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
-                out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
-                preds.append((out * y_std + y_mean).cpu()); targets.append(y.cpu())
-        p, t = torch.cat(preds), torch.cat(targets)
-        test_rmse = criterion(p, t).sqrt().item()
-        test_mae  = (p - t).abs().mean().item()
-        run_result["test_rmse"] = round(test_rmse, 4)
-        run_result["test_mae"]  = round(test_mae, 4)
-        print(f"Test RMSE: {test_rmse:.4f}  MAE: {test_mae:.4f}")
+                ckpt_path = f"checkpoint_run{run+1}_epoch{epoch+1}.pt"
+                torch.save(model.state_dict(), ckpt_path)
+
+                run_result["checkpoints"].append({
+                    "epoch": epoch + 1,
+                    "test_rmse": round(test_rmse, 4),
+                    "test_mae":  round(test_mae, 4),
+                })
+            print()
+
+        run_result["test_rmse"] = run_result["checkpoints"][-1]["test_rmse"]
+        run_result["test_mae"]  = run_result["checkpoints"][-1]["test_mae"]
+        print(f"Final test RMSE: {run_result['test_rmse']:.4f}  MAE: {run_result['test_mae']:.4f}")
         results["runs"].append(run_result)
 
     results["mean_test_rmse"] = round(sum(r["test_rmse"] for r in results["runs"]) / 3, 4)
