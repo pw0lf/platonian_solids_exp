@@ -68,6 +68,7 @@ def evaluate(model, loader, device, y_mean, y_std, criterion):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--use_pe",       action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--fullerenet_features_only", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--pe_k",         type=int,   default=5)
     parser.add_argument("--epochs",       type=int,   default=50)
     parser.add_argument("--batch_size",   type=int,   default=32)
@@ -84,12 +85,13 @@ if __name__ == "__main__":
         device = "mps"
     else:
         device = "cpu"
-    print(f"Device: {device} | use_pe: {args.use_pe} | pe_k: {args.pe_k}")
+    print(f"Device: {device} | use_pe: {args.use_pe} | pe_k: {args.pe_k} | fullerenet_features_only: {args.fullerenet_features_only}")
 
     print("Loading datasets...")
     # c60 dataset spans C20-C60: train/val on C20-C58, internal test on C60 (held out by size)
     c20_c58_c60 = FullereneComplexDataset("c60", root=str(FULLERENE_ROOT), target="Eb",
-                                          use_pe=args.use_pe, pe_k=args.pe_k)
+                                          use_pe=args.use_pe, pe_k=args.pe_k,
+                                          fullerenet_features_only=args.fullerenet_features_only)
     train_val_idx = [i for i in range(len(c20_c58_c60)) if c20_c58_c60[i][0].shape[0] <= 58]
     c60_test_idx  = [i for i in range(len(c20_c58_c60)) if c20_c58_c60[i][0].shape[0] == 60]
 
@@ -103,9 +105,11 @@ if __name__ == "__main__":
 
     # external test sets: C70 non-IPR and C72-C100 IPR
     c70_test_set     = FullereneComplexDataset("c70_non_IPR", root=str(FULLERENE_ROOT), target="Eb",
-                                                use_pe=args.use_pe, pe_k=args.pe_k)
+                                                use_pe=args.use_pe, pe_k=args.pe_k,
+                                                fullerenet_features_only=args.fullerenet_features_only)
     c72_100_test_set = FullereneComplexDataset("c72_100_IPR", root=str(FULLERENE_ROOT), target="Eb",
-                                                use_pe=args.use_pe, pe_k=args.pe_k)
+                                                use_pe=args.use_pe, pe_k=args.pe_k,
+                                                fullerenet_features_only=args.fullerenet_features_only)
 
     print(f"Loaded: rk0={c20_c58_c60.rk0_dim} rk1={c20_c58_c60.rk1_dim} rk2={c20_c58_c60.rk2_dim}")
     print(f"Train: {n_train} | Val: {n_val} | "
