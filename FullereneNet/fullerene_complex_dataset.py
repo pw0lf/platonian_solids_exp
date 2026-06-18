@@ -250,12 +250,17 @@ def make_matrices(mol, sssr):
     return icd01, icd02, icd12, make_adj(icd01), make_adj(icd01.T), make_adj(icd12.T)
 
 
-def _process_mol(mol, target, use_pe, pe_k):
+def _process_mol(mol, target, use_pe, pe_k, fullerenet_features_only=False):
     sssr = list(Chem.GetSymmSSSR(mol))
     icd01, icd02, icd12, adj00, adj11, adj22 = make_matrices(mol, sssr)
-    x_0 = torch.cat([make_atom_features(mol), make_pentagon_features(mol, sssr)], dim=1)
-    x_1 = torch.cat([make_bond_features(mol, sssr), make_ring_type_features(mol)], dim=1)
-    x_2 = make_ring_features(mol, sssr)
+    if fullerenet_features_only:
+        x_0 = make_pentagon_features(mol, sssr)
+        x_1 = make_ring_type_features(mol)
+        x_2 = make_ring_features(mol, sssr)[:, :1]
+    else:
+        x_0 = torch.cat([make_atom_features(mol), make_pentagon_features(mol, sssr)], dim=1)
+        x_1 = torch.cat([make_bond_features(mol, sssr), make_ring_type_features(mol)], dim=1)
+        x_2 = make_ring_features(mol, sssr)
     if use_pe:
         n_atoms, n_bonds, n_rings = x_0.shape[0], x_1.shape[0], x_2.shape[0]
         pe = CC_RWBSPe(pe_k, n_atoms, n_bonds, n_rings, icd01, icd02, icd12, "cpu")
@@ -273,7 +278,7 @@ class FullereneComplexDataset(Dataset):
     up-adjacency matrices).
     """
 
-    def __init__(self, name, root=".", target="Eb", use_pe=True, pe_k=5):
+    def __init__(self, name, root=".", target="Eb", use_pe=True, pe_k=5, fullerenet_features_only=False):
         super().__init__()
         if name not in SIZE_DIRS:
             raise ValueError(f"Unknown dataset name '{name}', expected one of {list(SIZE_DIRS)}")
@@ -297,7 +302,7 @@ class FullereneComplexDataset(Dataset):
         self.data = []
         for f, y in zip(files, targets):
             mol = load_mol(f)
-            self.data.append(_process_mol(mol, y, use_pe, pe_k))
+            self.data.append(_process_mol(mol, y, use_pe, pe_k, fullerenet_features_only))
 
         self.rk0_dim = self.data[0][0].shape[1]
         self.rk1_dim = self.data[0][1].shape[1]
