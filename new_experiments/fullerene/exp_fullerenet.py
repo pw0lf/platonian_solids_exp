@@ -2,6 +2,8 @@ import argparse
 import json
 import sys
 import time
+import warnings
+warnings.filterwarnings("ignore")
 import torch
 import torch.nn as nn
 import pandas as pd
