@@ -36,7 +36,7 @@ def evaluate(model, loader, device, y_mean, y_std, criterion):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--target",           type=str,   default="Eb")
-    parser.add_argument("--epochs",           type=int,   default=10)
+    parser.add_argument("--epochs",           type=int,   default=300)
     parser.add_argument("--batch_size",       type=int,   default=32)
     parser.add_argument("--lr",               type=float, default=1e-4)
     parser.add_argument("--num_interactions", type=int,   default=6)

@@ -1,6 +1,8 @@
 import glob
 import sys
 from pathlib import Path
+from rdkit import RDLogger
+RDLogger.DisableLog("rdApp.*")
 
 import pandas as pd
 import torch
