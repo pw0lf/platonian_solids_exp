@@ -1,21 +1,29 @@
 #!/bin/bash
+
+#========[ + + + + Requirements + + + + ]========#
 #SBATCH -A ki-topml
 #SBATCH -p topml
-#SBATCH --gres=gpu:1
-#SBATCH --mem=32G
+#SBATCH -J mol3d_gnn
 #SBATCH --time=0-24:00:00
-#SBATCH --job-name=mol3d_gnn
-#SBATCH --output=logs/mol3d_gnn_%A_%a.out
-#SBATCH --error=logs/mol3d_gnn_%A_%a.err
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --mem 32G
+#SBATCH --cpus-per-task=4
 #SBATCH --array=0-2
-
-source ../../venv/bin/activate
-
+#========[ + + + + Environment + + + + ]========#
+module load lang/Python/3.12.3-GCCcore-13.3.0
+#========[ + + + + Job Steps + + + + ]========#
+# 0: GCN
+# 1: GAT
+# 2: GIN
 MODELS=(GCN GAT GIN)
 MODEL=${MODELS[$SLURM_ARRAY_TASK_ID]}
 
-python exp_gnn.py \
+echo "CPUs: $SLURM_CPUS_PER_TASK | model: $MODEL"
+source ../../venv/bin/activate
+export PYTHONUNBUFFERED=1
+python3 -u exp_gnn.py \
     --model $MODEL \
     --epochs 300 \
-    --batch_size 32 \
-    --output results_mol3d_${MODEL,,}.json
+    --batch_size 32
+deactivate

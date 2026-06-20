@@ -1,21 +1,30 @@
 #!/bin/bash
+
+#========[ + + + + Requirements + + + + ]========#
 #SBATCH -A ki-topml
 #SBATCH -p topml
-#SBATCH --gres=gpu:1
-#SBATCH --mem=64G
+#SBATCH -J mol3d_ct
 #SBATCH --time=0-24:00:00
-#SBATCH --job-name=mol3d_ct
-#SBATCH --output=logs/mol3d_ct_%A_%a.out
-#SBATCH --error=logs/mol3d_ct_%A_%a.err
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --mem 64G
+#SBATCH --cpus-per-task=4
 #SBATCH --array=0-2
-
-source ../../venv/bin/activate
-
+#========[ + + + + Environment + + + + ]========#
+module load lang/Python/3.12.3-GCCcore-13.3.0
+#========[ + + + + Job Steps + + + + ]========#
+# 0: full (chem + xyz + PE)
+# 1: simple (mass/EN/vdW, bond type, ring size)
+# 2: coords (3D coords only)
 FEAT_MODES=(full simple coords)
 FEAT=${FEAT_MODES[$SLURM_ARRAY_TASK_ID]}
 
-python exp_ct.py \
+echo "CPUs: $SLURM_CPUS_PER_TASK | feat_mode: $FEAT"
+source ../../venv/bin/activate
+export PYTHONUNBUFFERED=1
+python3 -u exp_ct.py \
     --feat_mode $FEAT \
     --epochs 300 \
     --batch_size 16 \
     --pe_k 5
+deactivate
