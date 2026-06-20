@@ -92,12 +92,10 @@ if __name__ == "__main__":
     if args.output is None:
         args.output = f"results_func_ct_{args.feat_mode}.json"
 
-    smiles_csv = None
     if args.feat_mode in ("full", "simple"):
-        smiles_csv_path = SMILES_DIR / "smiles_train.csv"
-        assert smiles_csv_path.exists(), (
-            f"Missing {smiles_csv_path}. Run: python new_experiments/lrgb/download_smiles.py"
-        )
+        for split in ("train", "val", "test"):
+            p = SMILES_DIR / f"smiles_{split}.csv"
+            assert p.exists(), f"Missing {p}. Run: python new_experiments/lrgb/download_smiles.py"
 
     if torch.cuda.is_available():
         device = "cuda"

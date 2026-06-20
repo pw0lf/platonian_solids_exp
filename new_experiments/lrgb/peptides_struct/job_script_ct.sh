@@ -20,7 +20,7 @@ FEAT_MODES=(original full simple)
 FEAT=${FEAT_MODES[$SLURM_ARRAY_TASK_ID]}
 
 echo "CPUs: $SLURM_CPUS_PER_TASK | feat_mode: $FEAT"
-source ../../venv/bin/activate
+source ../../../venv/bin/activate
 export PYTHONUNBUFFERED=1
 python3 -u exp_ct.py \
     --feat_mode $FEAT \

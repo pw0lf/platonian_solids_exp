@@ -13,7 +13,7 @@
 module load lang/Python/3.12.3-GCCcore-13.3.0
 #========[ + + + + Job Steps + + + + ]========#
 echo "CPUs: $SLURM_CPUS_PER_TASK"
-source ../../venv/bin/activate
+source ../../../venv/bin/activate
 export PYTHONUNBUFFERED=1
 python3 -u exp_schnet.py \
     --epochs 300 \

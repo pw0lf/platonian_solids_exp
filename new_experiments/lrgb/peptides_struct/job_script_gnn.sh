@@ -20,7 +20,7 @@ MODELS=(GCN GAT GIN)
 MODEL=${MODELS[$SLURM_ARRAY_TASK_ID]}
 
 echo "CPUs: $SLURM_CPUS_PER_TASK | model: $MODEL"
-source ../../venv/bin/activate
+source ../../../venv/bin/activate
 export PYTHONUNBUFFERED=1
 python3 -u exp_gnn.py \
     --model $MODEL \
