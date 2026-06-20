@@ -35,7 +35,7 @@ def load_schnet_data(root, name, split, smiles_csv):
     data_list, loaded_indices = [], []
     failed = 0
     for i, (smi, pyg_item) in enumerate(zip(smiles_list, pyg_ds)):
-        y = pyg_item.y.squeeze(0).float()
+        y = pyg_item.y.float()
         mol = Chem.MolFromSmiles(smi)
         if mol is None:
             failed += 1

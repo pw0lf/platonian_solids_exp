@@ -22,7 +22,7 @@ class LRGBGNNDataset:
                 x=item.x.float(),
                 edge_index=item.edge_index,
                 edge_attr=item.edge_attr.float(),
-                y=item.y.squeeze(0).float(),
+                y=item.y.float(),
             ))
         self.indices = list(range(len(self._data)))
         self.num_node_features = 9

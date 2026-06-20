@@ -94,7 +94,7 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
 
     # Per-target z-score normalization fitted on train
-    train_labels = torch.stack([train_ds[i].y for i in range(len(train_ds))])  # (N, 11)
+    train_labels = torch.cat([train_ds[i].y for i in range(len(train_ds))])  # (N, 11)
     y_mean = train_labels.mean(dim=0, keepdim=True).to(device)
     y_std  = train_labels.std(dim=0,  keepdim=True).clamp(min=1e-6).to(device)
 

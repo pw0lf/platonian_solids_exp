@@ -78,7 +78,7 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
 
     # Per-target normalization from train labels
-    train_labels = torch.stack([d.y for d in train_data])  # (N, 11)
+    train_labels = torch.cat([d.y for d in train_data])  # (N, 11)
     y_mean = train_labels.mean(dim=0, keepdim=True).to(device)
     y_std  = train_labels.std(dim=0,  keepdim=True).clamp(min=1e-6).to(device)
 
