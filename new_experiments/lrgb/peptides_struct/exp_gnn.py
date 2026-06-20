@@ -141,8 +141,8 @@ if __name__ == "__main__":
         run_result["runtime"]   = round(time.time() - run_start, 2)
         run_result["predictions"] = [
             {"index": int(idx),
-             "pred": [round(float(v), 6) for v in pred.tolist()],
-             "true": [round(float(v), 6) for v in tgt.tolist()]}
+             "pred": [round(float(v), 6) for v in pred],
+             "true": [round(float(v), 6) for v in tgt]}
             for idx, pred, tgt in zip(test_ds.indices, test_preds.tolist(), test_targets.tolist())
         ]
         print(f"Val MAE: {val_mae:.4f}  Test MAE: {test_mae:.4f}")
