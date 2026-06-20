@@ -16,6 +16,11 @@ from torch.utils.data import Dataset
 from torch_geometric.datasets import LRGBDataset
 from pathlib import Path
 
+
+class _LRGBNoDownload(LRGBDataset):
+    def download(self):
+        pass
+
 sys.path.insert(0, str(Path(__file__).parent))
 from pe import CC_RWBSPe
 
@@ -320,7 +325,7 @@ class LRGBCTDataset(Dataset):
         feat_mode: 'original' | 'full' | 'simple'
         smiles_csv: path to CSV with 'smiles' column (needed for full/simple modes)
         """
-        pyg_ds = LRGBDataset(root=root, name=name, split=split)
+        pyg_ds = _LRGBNoDownload(root=root, name=name, split=split)
 
         self.data = []
         self.indices = []

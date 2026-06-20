@@ -9,6 +9,11 @@ import pandas as pd
 from torch_geometric.datasets import LRGBDataset
 from torch_geometric.data import Data
 from rdkit import Chem, RDLogger
+
+
+class _LRGBNoDownload(LRGBDataset):
+    def download(self):
+        pass
 from rdkit.Chem import AllChem
 
 RDLogger.DisableLog("rdApp.*")
@@ -19,7 +24,7 @@ def load_schnet_data(root, name, split, smiles_csv):
     Returns (data_list, loaded_indices) where loaded_indices are 0-based
     positions in the PyG split that were successfully embedded.
     """
-    pyg_ds = LRGBDataset(root=root, name=name, split=split)
+    pyg_ds = _LRGBNoDownload(root=root, name=name, split=split)
 
     df = pd.read_csv(smiles_csv)
     assert len(df) == len(pyg_ds), (

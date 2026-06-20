@@ -7,10 +7,15 @@ from torch_geometric.datasets import LRGBDataset
 from torch_geometric.data import Data
 
 
+class _LRGBNoDownload(LRGBDataset):
+    def download(self):
+        pass
+
+
 class LRGBGNNDataset:
     """Thin wrapper around PyG LRGBDataset that casts integer features to float."""
     def __init__(self, root, name, split):
-        ds = LRGBDataset(root=root, name=name, split=split)
+        ds = _LRGBNoDownload(root=root, name=name, split=split)
         self._data = []
         for i, item in enumerate(ds):
             self._data.append(Data(
