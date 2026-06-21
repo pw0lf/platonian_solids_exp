@@ -44,6 +44,16 @@ def graph_diameter(mol):
     return max_dist
 
 
+def cyclomatic_number(mol):
+    """Number of independent cycles: |E| - |V| + 1."""
+    return mol.GetNumBonds() - mol.GetNumAtoms() + 1
+
+
+def count_rings(mol):
+    """Number of rings in the SSSR (smallest set of smallest rings)."""
+    return mol.GetRingInfo().NumRings()
+
+
 def spatial_diameter(mol):
     """Max Euclidean distance between any two atoms (Angstrom)."""
     n = mol.GetNumAtoms()
@@ -86,6 +96,9 @@ def main():
     global_indices    = []
     graph_diameters   = []
     spatial_diameters = []
+    cyclomatic_numbers = []
+    num_rings_list    = []
+    n_components_list = []
     n_total   = 0
     n_skipped = 0
 
@@ -110,32 +123,52 @@ def main():
             try:
                 gd = graph_diameter(mol)
                 sd = spatial_diameter(mol)
+                cn = cyclomatic_number(mol)
+                nr = count_rings(mol)
+                nc = len(Chem.GetMolFrags(mol))
             except Exception:
                 n_skipped += 1
                 continue
             global_indices.append(g_start + local_idx)
             graph_diameters.append(gd)
             spatial_diameters.append(sd)
+            cyclomatic_numbers.append(cn)
+            num_rings_list.append(nr)
+            n_components_list.append(nc)
         else:
             continue
         break  # early stop triggered by max_mols
 
     print(f"\nDone: {n_total:,} total | {len(graph_diameters):,} valid | {n_skipped:,} skipped")
 
+    n_valid        = len(graph_diameters)
+    n_disconnected = sum(1 for c in n_components_list if c > 1)
+    n_neg_cyclo    = sum(1 for c in cyclomatic_numbers if c < 0)
+    print(f"\nConnectivity check:")
+    print(f"  num_components > 1 (disconnected): {n_disconnected:,} ({100*n_disconnected/n_valid:.3f}%)")
+    print(f"  cyclomatic_number < 0:             {n_neg_cyclo:,} ({100*n_neg_cyclo/n_valid:.3f}%)")
+
     idx = np.array(global_indices, dtype=np.int32)
     gd  = np.array(graph_diameters, dtype=np.int16)
     sd  = np.array(spatial_diameters, dtype=np.float32)
+    cn  = np.array(cyclomatic_numbers, dtype=np.int16)
+    nr  = np.array(num_rings_list, dtype=np.int16)
+    nc  = np.array(n_components_list, dtype=np.int8)
 
     per_mol_path = Path(args.output).with_name("dataset_per_molecule.npz")
-    np.savez_compressed(per_mol_path, index=idx, graph_diameter=gd, spatial_diameter=sd)
+    np.savez_compressed(per_mol_path, index=idx, graph_diameter=gd, spatial_diameter=sd,
+                        cyclomatic_number=cn, num_rings=nr, num_components=nc)
     print(f"Per-molecule data saved to {per_mol_path}")
 
     results = {
-        "n_total":   n_total,
-        "n_valid":   len(graph_diameters),
-        "n_skipped": n_skipped,
-        "graph_diameter_hops":    percentile_stats(gd),
+        "n_total":        n_total,
+        "n_valid":        n_valid,
+        "n_skipped":      n_skipped,
+        "n_disconnected": n_disconnected,
+        "graph_diameter_hops":       percentile_stats(gd),
         "spatial_diameter_angstrom": percentile_stats(sd),
+        "cyclomatic_number":         percentile_stats(cn),
+        "num_rings":                 percentile_stats(nr),
     }
 
     print("\n--- Graph Diameter (hops) ---")
@@ -144,6 +177,14 @@ def main():
 
     print("\n--- Spatial Diameter (Å) ---")
     for k, v in results["spatial_diameter_angstrom"].items():
+        print(f"  {k:8s}: {v:.2f}")
+
+    print("\n--- Cyclomatic Number ---")
+    for k, v in results["cyclomatic_number"].items():
+        print(f"  {k:8s}: {v:.2f}")
+
+    print("\n--- Num Rings (SSSR) ---")
+    for k, v in results["num_rings"].items():
         print(f"  {k:8s}: {v:.2f}")
 
     out_path = Path(args.output)
