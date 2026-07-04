@@ -102,6 +102,9 @@ class CellularTransformer(nn.Module):
 
         #embedding layers
         self.emb_dropout_layer = nn.Dropout(p=emb_dropout)
+        self.input_norm0 = nn.LayerNorm(rk0_dim)
+        self.input_norm1 = nn.LayerNorm(rk1_dim)
+        self.input_norm2 = nn.LayerNorm(rk2_dim)
         self.emb0 = nn.Linear(rk0_dim, hidden_dim)
         self.emb1 = nn.Linear(rk1_dim, hidden_dim)
         self.emb2 = nn.Linear(rk2_dim, hidden_dim)
@@ -128,9 +131,9 @@ class CellularTransformer(nn.Module):
 
     def forward(self, x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts):
         #embedding
-        x_0 = self.emb_dropout_layer(self.emb0(x_0))
-        x_1 = self.emb_dropout_layer(self.emb1(x_1))
-        x_2 = self.emb_dropout_layer(self.emb2(x_2))
+        x_0 = self.emb_dropout_layer(self.emb0(self.input_norm0(x_0)))
+        x_1 = self.emb_dropout_layer(self.emb1(self.input_norm1(x_1)))
+        x_2 = self.emb_dropout_layer(self.emb2(self.input_norm2(x_2)))
 
         adj00_m = adj00.to_dense().bool()
         icd01_m = icd01.to_dense().bool()
