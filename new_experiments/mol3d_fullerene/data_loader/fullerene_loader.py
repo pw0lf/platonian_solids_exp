@@ -75,7 +75,7 @@ def _iter_fullerene_mols(root, target):
         assert len(files) == len(labels)
         targets = torch.tensor(labels[target_col].values, dtype=torch.float32)
         for f, y in zip(files, targets):
-            yield _load_mol(f), y
+            yield _load_mol(f), y.unsqueeze(0)
 
 
 # ── SchNet ────────────────────────────────────────────────────────────────────
