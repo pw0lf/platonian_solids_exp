@@ -19,7 +19,7 @@ from mol3d_ct_rand import Mol3dCT
 from ct import CellularTransformer
 from fullerene_loader import load_fullerene_ct
 
-MOL3D_DATA_ROOT      = str(MOL3D_DIR.parent / "mol3d" / "data" / "data" / "raw")
+MOL3D_DATA_ROOT      = str(Path(__file__).parent.parent.parent / "mol3d" / "data" / "data" / "raw")
 MOL3D_SPLIT_FILE     = MOL3D_DIR / "data_split.json"
 FULLERENE_SPLIT_FILE = Path(__file__).parent.parent / "fullerene_randomsplit" / "split.json"
 

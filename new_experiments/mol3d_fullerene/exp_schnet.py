@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent / "data_loader"))
 from mol3d_schnet import load_schnet_data as load_mol3d_schnet
 from fullerene_loader import load_fullerene_schnet
 
-MOL3D_DATA_ROOT    = str(MOL3D_DIR.parent / "mol3d" / "data" / "data" / "raw")
+MOL3D_DATA_ROOT    = str(Path(__file__).parent.parent.parent / "mol3d" / "data" / "data" / "raw")
 MOL3D_SPLIT_FILE   = MOL3D_DIR / "data_split.json"
 FULLERENE_SPLIT_FILE = Path(__file__).parent.parent / "fullerene_randomsplit" / "split.json"
 

@@ -19,7 +19,7 @@ from mol3d_gnn import load_gnn_data as load_mol3d_gnn, NODE_DIM, EDGE_DIM
 from gnn_models import GCN, GAT, GIN
 from fullerene_loader import load_fullerene_gnn
 
-MOL3D_DATA_ROOT      = str(MOL3D_DIR.parent / "mol3d" / "data" / "data" / "raw")
+MOL3D_DATA_ROOT      = str(Path(__file__).parent.parent.parent / "mol3d" / "data" / "data" / "raw")
 MOL3D_SPLIT_FILE     = MOL3D_DIR / "data_split.json"
 FULLERENE_SPLIT_FILE = Path(__file__).parent.parent / "fullerene_randomsplit" / "split.json"
 
