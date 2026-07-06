@@ -11,7 +11,6 @@ feat_mode options:
 import sys
 import torch
 import networkx as nx
-import pandas as pd
 from torch.utils.data import Dataset
 from torch_geometric.datasets import LRGBDataset
 from pathlib import Path
@@ -23,6 +22,9 @@ class _LRGBNoDownload(LRGBDataset):
 
 sys.path.insert(0, str(Path(__file__).parent))
 from pe import CC_RWBSPe
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from smiles_align import align_smiles_to_splits
 
 from rdkit import Chem, RDLogger
 RDLogger.DisableLog("rdApp.*")
@@ -317,13 +319,15 @@ def _process_from_smiles(smiles, y, feat_mode, pe_k):
 # ── Dataset class ─────────────────────────────────────────────────────────────
 
 class LRGBCTDataset(Dataset):
-    def __init__(self, root, name, split, feat_mode="original", pe_k=5, smiles_csv=None):
+    def __init__(self, root, name, split, feat_mode="original", pe_k=5,
+                 smiles_pool=None, smiles_perm=None):
         """
         root: PyG data root directory
         name: 'Peptides-func' or 'Peptides-struct'
         split: 'train', 'val', 'test'
         feat_mode: 'original' | 'full' | 'simple'
-        smiles_csv: path to CSV with 'smiles' column (needed for full/simple modes)
+        smiles_pool, smiles_perm: from align_smiles_to_splits() (needed for
+            full/simple modes) -- smiles_perm must be the entry for this split
         """
         pyg_ds = _LRGBNoDownload(root=root, name=name, split=split)
 
@@ -339,20 +343,20 @@ class LRGBCTDataset(Dataset):
                 except Exception:
                     pass
         else:
-            assert smiles_csv is not None, (
+            assert smiles_pool is not None and smiles_perm is not None, (
                 f"feat_mode='{feat_mode}' requires SMILES. "
-                "Run new_experiments/lrgb/download_smiles.py first and pass smiles_csv=..."
+                "Run new_experiments/lrgb/download_smiles.py and align_smiles_to_splits() first."
             )
-            df = pd.read_csv(smiles_csv)
-            assert len(df) == len(pyg_ds), (
-                f"SMILES CSV has {len(df)} rows but PyG split '{split}' has {len(pyg_ds)} items. "
-                "Ensure the CSV was generated for this split."
+            assert len(smiles_perm) == len(pyg_ds), (
+                f"smiles_perm has {len(smiles_perm)} entries but PyG split '{split}' has {len(pyg_ds)} items."
             )
-            smiles_list = df["smiles"].tolist()
-            for i, (item, smi) in enumerate(zip(pyg_ds, smiles_list)):
+            for i, item in enumerate(pyg_ds):
+                p = smiles_perm[i]
+                if p is None:
+                    continue
                 y = item.y.squeeze(0).float()
                 try:
-                    ct = _process_from_smiles(smi, y, feat_mode, pe_k)
+                    ct = _process_from_smiles(smiles_pool[p], y, feat_mode, pe_k)
                     if ct is not None:
                         self.data.append(ct)
                         self.indices.append(i)

@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / "data_loader"))
 sys.path.insert(0, str(Path(__file__).parent / "models"))
-from lrgb_ct import LRGBCTDataset
+from lrgb_ct import LRGBCTDataset, align_smiles_to_splits
 from ct import CellularTransformer
 
 DATASET_NAME = "Peptides-struct"
@@ -99,23 +99,24 @@ if __name__ == "__main__":
         device = "cpu"
     print(f"Device: {device} | dataset: {DATASET_NAME} | feat_mode: {args.feat_mode}")
 
-    def get_smiles_csv(split):
-        if args.feat_mode in ("full", "simple"):
-            return str(SMILES_DIR / f"smiles_{split}.csv")
-        return None
+    smiles_pool, perms = None, {"train": None, "val": None, "test": None}
+    if args.feat_mode in ("full", "simple"):
+        print("Aligning SMILES to PyG graphs by content (may take under a minute)...")
+        smiles_csv_paths = {s: str(SMILES_DIR / f"smiles_{s}.csv") for s in ("train", "val", "test")}
+        smiles_pool, perms = align_smiles_to_splits(args.datapath, DATASET_NAME, smiles_csv_paths)
 
     print("Loading train dataset...")
     train_ds = LRGBCTDataset(args.datapath, DATASET_NAME, "train",
                              feat_mode=args.feat_mode, pe_k=args.pe_k,
-                             smiles_csv=get_smiles_csv("train"))
+                             smiles_pool=smiles_pool, smiles_perm=perms["train"])
     print("Loading val dataset...")
     val_ds   = LRGBCTDataset(args.datapath, DATASET_NAME, "val",
                              feat_mode=args.feat_mode, pe_k=args.pe_k,
-                             smiles_csv=get_smiles_csv("val"))
+                             smiles_pool=smiles_pool, smiles_perm=perms["val"])
     print("Loading test dataset...")
     test_ds  = LRGBCTDataset(args.datapath, DATASET_NAME, "test",
                              feat_mode=args.feat_mode, pe_k=args.pe_k,
-                             smiles_csv=get_smiles_csv("test"))
+                             smiles_pool=smiles_pool, smiles_perm=perms["test"])
     print(f"Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
 
     val_loader  = DataLoader(val_ds,  batch_size=args.batch_size, shuffle=False, collate_fn=collate)

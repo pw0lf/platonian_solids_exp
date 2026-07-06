@@ -12,7 +12,7 @@ from torch_geometric.nn.models import SchNet
 from torch.optim.lr_scheduler import ExponentialLR
 
 sys.path.insert(0, str(Path(__file__).parent / "data_loader"))
-from lrgb_schnet import load_schnet_data
+from lrgb_schnet import load_schnet_data, align_smiles_to_splits
 
 from rdkit import RDLogger
 RDLogger.DisableLog("rdApp.*")
@@ -61,17 +61,23 @@ if __name__ == "__main__":
         device = "cuda"
     else:
         device = "cpu"
+    device = "cpu"
+    print("Device hardcoded")
     print(f"Device: {device} | dataset: {DATASET_NAME}")
+
+    print("Aligning SMILES to PyG graphs by content (may take under a minute)...")
+    smiles_csv_paths = {s: str(SMILES_DIR / f"smiles_{s}.csv") for s in ("train", "val", "test")}
+    smiles_pool, perms = align_smiles_to_splits(args.datapath, DATASET_NAME, smiles_csv_paths)
 
     print("Loading train data...")
     train_data, _ = load_schnet_data(
-        args.datapath, DATASET_NAME, "train", str(SMILES_DIR / "smiles_train.csv"))
+        args.datapath, DATASET_NAME, "train", smiles_pool, perms["train"])
     print("Loading val data...")
     val_data, val_idx = load_schnet_data(
-        args.datapath, DATASET_NAME, "val", str(SMILES_DIR / "smiles_val.csv"))
+        args.datapath, DATASET_NAME, "val", smiles_pool, perms["val"])
     print("Loading test data...")
     test_data, test_idx = load_schnet_data(
-        args.datapath, DATASET_NAME, "test", str(SMILES_DIR / "smiles_test.csv"))
+        args.datapath, DATASET_NAME, "test", smiles_pool, perms["test"])
     print(f"Train: {len(train_data)} | Val: {len(val_data)} | Test: {len(test_data)}")
 
     val_loader  = DataLoader(val_data,  batch_size=args.batch_size, shuffle=False)
