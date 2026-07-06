@@ -4,7 +4,7 @@
 #SBATCH -A ki-topml
 #SBATCH -p topml
 #SBATCH -J mf_ct
-#SBATCH --time=0-24:00:00
+#SBATCH --time=0-48:00:00
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --mem 64G

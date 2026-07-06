@@ -185,7 +185,7 @@ if __name__ == "__main__":
                 x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts, y = [b.to(device) for b in batch]
                 optimizer.zero_grad()
                 out = model(x_0, x_1, x_2, adj00, icd01, adj11, icd02, icd12, adj22, node_counts)
-                loss = criterion(out, (y.squeeze(-1) - y_mean) / y_std)
+                loss = criterion(out, (y - y_mean) / y_std)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
                 optimizer.step()
