@@ -40,7 +40,7 @@ def evaluate(model, loader, device, y_mean, y_std, criterion):
     rmse = criterion(p, t).sqrt().item()
     mae = (p - t).abs().mean().item()
     r2 = (1 - ((p - t) ** 2).sum() / ((t - t.mean()) ** 2).sum()).item()
-    return rmse, mae, r2
+    return rmse, mae, r2, p, t
 
 
 if __name__ == "__main__":
@@ -71,8 +71,8 @@ if __name__ == "__main__":
     full_split    = json.load(open(args.fullerene_split))
 
     print("Loading mol3d data...")
-    mol3d_train, _ = load_mol3d_schnet(mol3d_split["train"], root=args.mol3d_datapath)
-    mol3d_test,  _ = load_mol3d_schnet(mol3d_split["test"],  root=args.mol3d_datapath)
+    mol3d_train, _                  = load_mol3d_schnet(mol3d_split["train"], root=args.mol3d_datapath)
+    mol3d_test,  mol3d_test_indices = load_mol3d_schnet(mol3d_split["test"],  root=args.mol3d_datapath)
 
     print("Loading fullerene data...")
     fullerene_all = load_fullerene_schnet(root=str(FULLERENE_ROOT), target="Gap")
@@ -140,11 +140,27 @@ if __name__ == "__main__":
             run_result["epoch_times"].append(round(time.time() - epoch_start, 2))
             print(f"Epoch {epoch+1:3d}  train_loss={train_loss:.4f}")
 
-        test_rmse, test_mae, test_r2 = evaluate(model, test_loader, device, y_mean, y_std, criterion)
+        test_rmse, test_mae, test_r2, test_preds, test_targets = evaluate(
+            model, test_loader, device, y_mean, y_std, criterion)
         run_result["test_rmse"] = round(test_rmse, 4)
         run_result["test_mae"]  = round(test_mae, 4)
         run_result["test_r2"]   = round(test_r2, 4)
         run_result["runtime"]   = round(time.time() - run_start, 2)
+        n_mol3d_test = len(mol3d_test)
+        run_result["predictions"] = (
+            [
+                {"source": "mol3d", "index": int(idx), "pred": round(float(p), 6), "true": round(float(t), 6)}
+                for idx, p, t in zip(mol3d_test_indices,
+                                     test_preds[:n_mol3d_test].tolist(),
+                                     test_targets[:n_mol3d_test].tolist())
+            ]
+            + [
+                {"source": "fullerene", "index": int(idx), "pred": round(float(p), 6), "true": round(float(t), 6)}
+                for idx, p, t in zip(full_split["test_idx"],
+                                     test_preds[n_mol3d_test:].tolist(),
+                                     test_targets[n_mol3d_test:].tolist())
+            ]
+        )
         print(f"Test  RMSE: {test_rmse:.4f}  MAE: {test_mae:.4f}  R2: {test_r2:.4f}")
         results["runs"].append(run_result)
 
