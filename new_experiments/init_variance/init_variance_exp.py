@@ -974,7 +974,9 @@ STUCK_PATIENCE = 3
 MODELS = {"TNN": TNN, "GCN": GCN, "GAN": GAN, "GIN": GIN, "TNN_Att": TNN_Att}
 CC_MODELS = {"TNN", "TNN_Att"}
 
-# Highest noise level from the original sweep (mnoev max=150, epsf max=0.3)
+# Noise level from the original sweep (mnoev max=150, epsf max=0.3). `m` is
+# overridable via --m to repeat the experiment at other noise levels (the
+# eps stays fixed at the sweep's highest value, 0.3).
 DATA_M = 150
 DATA_EPS = 0.3
 TRAIN_COUNT_PER_CLASS = 500
@@ -1019,22 +1021,22 @@ def load_best_hps(model_name):
     return hps
 
 
-def build_fixed_datasets(model_name):
+def build_fixed_datasets(model_name, m=DATA_M, eps=DATA_EPS):
     if model_name in CC_MODELS:
         np.random.seed(DATA_SEED_TRAIN)
         train_dataset = NoisyPlatonicSolids(
-            {name: TRAIN_COUNT_PER_CLASS for name in SOLID_TYPES}, DATA_M, DATA_EPS)
+            {name: TRAIN_COUNT_PER_CLASS for name in SOLID_TYPES}, m, eps)
         np.random.seed(DATA_SEED_TEST)
         test_dataset = NoisyPlatonicSolids(
-            {name: TEST_COUNT_PER_CLASS for name in SOLID_TYPES}, DATA_M, DATA_EPS)
+            {name: TEST_COUNT_PER_CLASS for name in SOLID_TYPES}, m, eps)
 
         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
         test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, collate_fn=platonic_collate)
     else:
         np.random.seed(DATA_SEED_TRAIN)
-        train_list = build_dataset({name: TRAIN_COUNT_PER_CLASS for name in SOLID_TYPES}, DATA_M, DATA_EPS)
+        train_list = build_dataset({name: TRAIN_COUNT_PER_CLASS for name in SOLID_TYPES}, m, eps)
         np.random.seed(DATA_SEED_TEST)
-        test_list = build_dataset({name: TEST_COUNT_PER_CLASS for name in SOLID_TYPES}, DATA_M, DATA_EPS)
+        test_list = build_dataset({name: TEST_COUNT_PER_CLASS for name in SOLID_TYPES}, m, eps)
 
         train_loader = PyGDataLoader(train_list, batch_size=32, shuffle=True)
         test_loader = PyGDataLoader(test_list, batch_size=32, shuffle=False)
@@ -1042,9 +1044,9 @@ def build_fixed_datasets(model_name):
     return train_loader, test_loader
 
 
-def run_init_variance(model_name, num_seeds, device, out_path):
+def run_init_variance(model_name, num_seeds, device, out_path, m=DATA_M, eps=DATA_EPS):
     hps = load_best_hps(model_name)
-    train_loader, test_loader = build_fixed_datasets(model_name)
+    train_loader, test_loader = build_fixed_datasets(model_name, m=m, eps=eps)
     model_cls = MODELS[model_name]
 
     runs = []
@@ -1067,7 +1069,7 @@ def run_init_variance(model_name, num_seeds, device, out_path):
 
         with open(out_path, "w") as f:
             json.dump({"model": model_name, "hps": hps, "data_params": {
-                "m": DATA_M, "eps": DATA_EPS,
+                "m": m, "eps": eps,
                 "train_per_class": TRAIN_COUNT_PER_CLASS, "test_per_class": TEST_COUNT_PER_CLASS,
             }, "runs": runs}, f, indent=2)
 
@@ -1082,9 +1084,11 @@ if __name__ == "__main__":
     argparser.add_argument("--num_seeds", type=int, default=100)
     argparser.add_argument("--device", type=str, default="cpu")
     argparser.add_argument("--out_dir", type=str, default="init_variance_results")
+    argparser.add_argument("--m", type=int, default=DATA_M,
+                            help="max_num_of_extra_vertices for the noisy platonic solids (eps stays fixed at 0.3)")
     args = argparser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
-    out_path = os.path.join(args.out_dir, f"{args.model}_init_variance.json")
+    out_path = os.path.join(args.out_dir, f"{args.model}_m{args.m}_init_variance.json")
 
-    run_init_variance(args.model, args.num_seeds, args.device, out_path)
+    run_init_variance(args.model, args.num_seeds, args.device, out_path, m=args.m)
