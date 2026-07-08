@@ -7,9 +7,11 @@ in the original sweep: m=150 extra vertices, eps=0.3) and the exact same
 frozen best hyperparameters (hard-coded in BEST_HPS below, taken from the
 top row of "results 2/<MODEL>_*/top5_params.csv").
 
-Only the model's weight initialization varies across runs (DataLoader
-shuffling is disabled so batch order is identical across seeds too -- the
-only source of run-to-run variance is the random weight init).
+Weight init varies across runs via `torch.manual_seed(seed)` before model
+construction. Train-loader shuffling is left on (`shuffle=True`), so batch
+order also varies per seed (it's driven by the same seeded global torch RNG)
+-- runs capture init + shuffle-order variance together, not init in
+isolation. Test loader is not shuffled (order doesn't affect accuracy).
 
 No restart-on-stuck: every seed is run to completion once, even if the loss
 gets stuck. The "stuck" flag is recorded, not resampled.
@@ -1026,7 +1028,7 @@ def build_fixed_datasets(model_name):
         test_dataset = NoisyPlatonicSolids(
             {name: TEST_COUNT_PER_CLASS for name in SOLID_TYPES}, DATA_M, DATA_EPS)
 
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False, collate_fn=platonic_collate)
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=platonic_collate)
         test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, collate_fn=platonic_collate)
     else:
         np.random.seed(DATA_SEED_TRAIN)
@@ -1034,7 +1036,7 @@ def build_fixed_datasets(model_name):
         np.random.seed(DATA_SEED_TEST)
         test_list = build_dataset({name: TEST_COUNT_PER_CLASS for name in SOLID_TYPES}, DATA_M, DATA_EPS)
 
-        train_loader = PyGDataLoader(train_list, batch_size=32, shuffle=False)
+        train_loader = PyGDataLoader(train_list, batch_size=32, shuffle=True)
         test_loader = PyGDataLoader(test_list, batch_size=32, shuffle=False)
 
     return train_loader, test_loader
