@@ -44,12 +44,14 @@ def collate(batch):
     )
 
 
-def make_model(rk0_dim, rk1_dim, rk2_dim):
+def make_model(args, rk0_dim, rk1_dim, rk2_dim):
     return CellularTransformer(
         rk0_dim=rk0_dim, rk1_dim=rk1_dim, rk2_dim=rk2_dim,
-        output_dim=OUT_DIM, num_layers=4, hidden_dim=128, num_heads=4,
-        hidden_dim_per_head=8, att_dropout=0.1, emb_dropout=0.2,
-        readout_dropout=0.1, num_readout_hidden_layers=2,
+        output_dim=OUT_DIM, num_layers=args.num_layers, hidden_dim=args.hidden_dim,
+        num_heads=args.num_heads, hidden_dim_per_head=args.hidden_dim_per_head,
+        att_dropout=args.att_dropout, emb_dropout=args.emb_dropout,
+        readout_dropout=args.readout_dropout,
+        num_readout_hidden_layers=args.num_readout_hidden_layers,
     )
 
 
@@ -79,9 +81,37 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size",    type=int,   default=16)
     parser.add_argument("--lr",            type=float, default=1e-3)
     parser.add_argument("--warmup_epochs", type=int,   default=5)
+    parser.add_argument("--num_layers",    type=int,   default=4)
+    parser.add_argument("--hidden_dim",    type=int,   default=128)
+    parser.add_argument("--num_heads",     type=int,   default=4)
+    parser.add_argument("--hidden_dim_per_head", type=int, default=8)
+    parser.add_argument("--att_dropout",     type=float, default=0.1)
+    parser.add_argument("--emb_dropout",     type=float, default=0.2)
+    parser.add_argument("--readout_dropout", type=float, default=0.1)
+    parser.add_argument("--num_readout_hidden_layers", type=int, default=2)
     parser.add_argument("--seed",          type=int,   default=42)
     parser.add_argument("--output",        type=str,   default=None)
+    parser.add_argument("--hp_file",       type=str,   default=None,
+                        help="JSON from hp_tuning_ct.py. Values for keys present in the file "
+                             "unconditionally override this script's CLI defaults for "
+                             "lr/num_layers/hidden_dim/num_heads/hidden_dim_per_head/att_dropout/"
+                             "emb_dropout/readout_dropout/num_readout_hidden_layers -- even if you "
+                             "also pass those flags explicitly.")
     args = parser.parse_args()
+
+    if args.hp_file:
+        with open(args.hp_file) as f:
+            hp = json.load(f)
+        for key in ("lr", "num_layers", "hidden_dim", "num_heads", "hidden_dim_per_head",
+                    "att_dropout", "emb_dropout", "readout_dropout", "num_readout_hidden_layers"):
+            if key in hp:
+                setattr(args, key, hp[key])
+        print(f"Loaded hyperparameters from {args.hp_file}: "
+              f"lr={args.lr} num_layers={args.num_layers} hidden_dim={args.hidden_dim} "
+              f"num_heads={args.num_heads} hidden_dim_per_head={args.hidden_dim_per_head} "
+              f"att_dropout={args.att_dropout} emb_dropout={args.emb_dropout} "
+              f"readout_dropout={args.readout_dropout} "
+              f"num_readout_hidden_layers={args.num_readout_hidden_layers}")
 
     if args.output is None:
         args.output = f"results_struct_ct_{args.feat_mode}.json"
@@ -137,7 +167,7 @@ if __name__ == "__main__":
     for run in range(3):
         print(f"\n--- Run {run + 1}/3 ---")
         torch.manual_seed(args.seed + run)
-        model = make_model(train_ds.rk0_dim, train_ds.rk1_dim, train_ds.rk2_dim).to(device)
+        model = make_model(args, train_ds.rk0_dim, train_ds.rk1_dim, train_ds.rk2_dim).to(device)
         if run == 0:
             results["num_params"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -192,6 +222,8 @@ if __name__ == "__main__":
     print(f"\nMean Val MAE: {results['mean_val_mae']:.4f}  Mean Test MAE: {results['mean_test_mae']:.4f}")
 
     out_path = Path(__file__).parent / "results" / args.output
+    if args.hp_file:
+        out_path = out_path.with_name(f"{out_path.stem}_hptuned{out_path.suffix}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
         stem, suffix = out_path.stem, out_path.suffix

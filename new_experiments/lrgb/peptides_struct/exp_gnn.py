@@ -68,7 +68,24 @@ if __name__ == "__main__":
     parser.add_argument("--mlp_hidden_dim",    type=int,   default=None)
     parser.add_argument("--seed",              type=int,   default=42)
     parser.add_argument("--output",            type=str,   default=None)
+    parser.add_argument("--hp_file",           type=str,   default=None,
+                        help="JSON from hp_tuning_<model>.py. Values for keys present in the file "
+                             "unconditionally override this script's CLI defaults for "
+                             "lr/hidden_channels/num_conv_layers/dropout/readout_hidden_dim/"
+                             "num_readout_layers/num_heads/mlp_hidden_dim -- even if you also pass "
+                             "those flags explicitly.")
     args = parser.parse_args()
+
+    if args.hp_file:
+        with open(args.hp_file) as f:
+            hp = json.load(f)
+        hp_keys = ("lr", "hidden_channels", "num_conv_layers", "dropout",
+                   "readout_hidden_dim", "num_readout_layers", "num_heads", "mlp_hidden_dim")
+        for key in hp_keys:
+            if key in hp:
+                setattr(args, key, hp[key])
+        print(f"Loaded hyperparameters from {args.hp_file}: "
+              f"{ {k: getattr(args, k) for k in hp_keys} }")
 
     if args.output is None:
         args.output = f"results_struct_{args.model.lower()}.json"
@@ -153,6 +170,8 @@ if __name__ == "__main__":
     print(f"\nMean Val MAE: {results['mean_val_mae']:.4f}  Mean Test MAE: {results['mean_test_mae']:.4f}")
 
     out_path = Path(__file__).parent / "results" / args.output
+    if args.hp_file:
+        out_path = out_path.with_name(f"{out_path.stem}_hptuned{out_path.suffix}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
         stem, suffix = out_path.stem, out_path.suffix

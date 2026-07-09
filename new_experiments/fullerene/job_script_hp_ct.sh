@@ -1,0 +1,22 @@
+#!/bin/bash
+
+#========[ + + + + Requirements + + + + ]========#
+#SBATCH -A ki-topml
+#SBATCH -p topml
+#SBATCH -J fullerene_hp_ct
+#SBATCH --time=0-02:00:00
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --mem 64G
+#SBATCH --cpus-per-task=4
+#========[ + + + + Environment + + + + ]========#
+module load lang/Python/3.12.3-GCCcore-13.3.0
+#========[ + + + + Job Steps + + + + ]========#
+echo "CPUs: $SLURM_CPUS_PER_TASK | hp tuning: CT"
+source ../../venv/bin/activate
+export PYTHONUNBUFFERED=1
+python3 -u hp_tuning_ct.py \
+    --n_trials 10 \
+    --epochs 15 \
+    --batch_size 32
+deactivate

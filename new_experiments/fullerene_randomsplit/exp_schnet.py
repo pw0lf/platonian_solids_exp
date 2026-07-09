@@ -32,7 +32,7 @@ def evaluate(model, loader, device, y_mean, y_std, criterion):
     rmse = criterion(p, t).sqrt().item()
     mae = (p - t).abs().mean().item()
     r2 = (1 - ((p - t) ** 2).sum() / ((t - t.mean()) ** 2).sum()).item()
-    return rmse, mae, r2
+    return rmse, mae, r2, p, t
 
 
 if __name__ == "__main__":
@@ -48,7 +48,21 @@ if __name__ == "__main__":
     parser.add_argument("--seed",             type=int,   default=42)
     parser.add_argument("--output",           type=str,   default="results_schnet.json",
                         help="filename (saved inside results/)")
+    parser.add_argument("--hp_file",          type=str,   default=None,
+                        help="JSON from fullerene/hp_tuning_schnet.py (shared tuning). Values for "
+                             "keys present in the file unconditionally override this script's CLI "
+                             "defaults for lr/hidden_channels/num_interactions/num_filters/cutoff -- "
+                             "even if you also pass those flags explicitly.")
     args = parser.parse_args()
+
+    if args.hp_file:
+        with open(args.hp_file) as f:
+            hp = json.load(f)
+        for key in ("lr", "hidden_channels", "num_interactions", "num_filters", "cutoff"):
+            if key in hp:
+                setattr(args, key, hp[key])
+        print(f"Loaded hyperparameters from {args.hp_file}: "
+              f"{ {k: getattr(args, k) for k in ('lr', 'hidden_channels', 'num_interactions', 'num_filters', 'cutoff')} }")
 
     if torch.cuda.is_available():
         device = "cuda"
@@ -56,6 +70,8 @@ if __name__ == "__main__":
         device = "mps"
     else:
         device = "cpu"
+    device = "cpu"
+    print("Device hardcoded")
     print(f"Device: {device}")
 
     with open(SPLIT_FILE) as f:
@@ -122,10 +138,15 @@ if __name__ == "__main__":
             run_result["epoch_times"].append(round(time.time() - epoch_start, 2))
             print(f"Epoch {epoch+1:3d}  train_loss={train_loss:.4f}")
 
-        test_rmse, test_mae, test_r2 = evaluate(model, test_loader, device, y_mean, y_std, criterion)
+        test_rmse, test_mae, test_r2, test_preds, test_targets = evaluate(
+            model, test_loader, device, y_mean, y_std, criterion)
         run_result["test_rmse"] = round(test_rmse, 4)
         run_result["test_mae"]  = round(test_mae, 4)
         run_result["test_r2"]   = round(test_r2, 4)
+        run_result["predictions"] = [
+            {"index": idx, "pred": round(float(p), 6), "true": round(float(t), 6)}
+            for idx, p, t in zip(split["test_idx"], test_preds.tolist(), test_targets.tolist())
+        ]
         run_result["runtime"]   = round(time.time() - run_start, 2)
         print(f"Test  RMSE: {test_rmse:.4f}  MAE: {test_mae:.4f}  R2: {test_r2:.4f}")
         results["runs"].append(run_result)
@@ -137,6 +158,8 @@ if __name__ == "__main__":
           f"MAE: {results['mean_test_mae']:.4f}  R2: {results['mean_test_r2']:.4f}")
 
     out_path = Path(__file__).parent / "results" / args.output
+    if args.hp_file:
+        out_path = out_path.with_name(f"{out_path.stem}_hptuned{out_path.suffix}")
     if out_path.exists():
         stem, suffix = out_path.stem, out_path.suffix
         i = 1
