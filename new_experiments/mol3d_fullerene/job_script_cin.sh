@@ -17,6 +17,9 @@ module load lang/Python/3.12.3-GCCcore-13.3.0
 # 1: CINpp (up + down + boundary messages)
 MODELS=(CIN CINpp)
 MODEL=${MODELS[$SLURM_ARRAY_TASK_ID]}
+HP_FILE="results/best_hp_${MODEL,,}.json"
+HP_ARGS=()
+[ -f "$HP_FILE" ] && HP_ARGS=(--hp_file "$HP_FILE")
 
 echo "CPUs: $SLURM_CPUS_PER_TASK | model: $MODEL"
 source ../../venv/bin/activate
@@ -26,5 +29,6 @@ python3 -u exp_cin.py \
     --epochs 300 \
     --batch_size 16 \
     --hidden 128 \
-    --num_layers 4
+    --num_layers 4 \
+    "${HP_ARGS[@]}"
 deactivate

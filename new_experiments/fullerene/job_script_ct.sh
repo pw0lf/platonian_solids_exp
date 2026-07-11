@@ -23,11 +23,16 @@ CHEM=(full   full   simple simple none)
 TOPO=(--topo_features --no-topo_features --topo_features --no-topo_features --topo_features)
 NAME=(full_topo full_notopo simple_topo simple_notopo none_topo)
 
+HP_FILE="results/best_hp_ct.json"
+HP_ARGS=()
+[ -f "$HP_FILE" ] && HP_ARGS=(--hp_file "$HP_FILE")
+
 echo "CPUs: $SLURM_CPUS_PER_TASK | task: ${NAME[$SLURM_ARRAY_TASK_ID]}"
 source ../../venv/bin/activate
 export PYTHONUNBUFFERED=1
 python3 -u exp_ct.py \
     --chem_features "${CHEM[$SLURM_ARRAY_TASK_ID]}" \
     ${TOPO[$SLURM_ARRAY_TASK_ID]} \
-    --output "results_ct_${NAME[$SLURM_ARRAY_TASK_ID]}.json"
+    --output "results_ct_${NAME[$SLURM_ARRAY_TASK_ID]}.json" \
+    "${HP_ARGS[@]}"
 deactivate

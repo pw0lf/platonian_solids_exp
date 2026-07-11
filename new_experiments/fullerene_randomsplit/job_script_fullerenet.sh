@@ -12,8 +12,12 @@
 #========[ + + + + Environment + + + + ]========#
 module load lang/Python/3.12.3-GCCcore-13.3.0
 #========[ + + + + Job Steps + + + + ]========#
+HP_FILE="results/best_hp_fullerenet.json"
+HP_ARGS=()
+[ -f "$HP_FILE" ] && HP_ARGS=(--hp_file "$HP_FILE")
+
 echo "CPUs: $SLURM_CPUS_PER_TASK"
 source ../../venv/bin/activate
 export PYTHONUNBUFFERED=1
-python3 -u exp_fullerenet.py --output "results_fullerenet.json"
+python3 -u exp_fullerenet.py --output "results_fullerenet.json" "${HP_ARGS[@]}"
 deactivate

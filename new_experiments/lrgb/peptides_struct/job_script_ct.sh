@@ -18,6 +18,9 @@ module load lang/Python/3.12.3-GCCcore-13.3.0
 # 2: simple   (mass/EN/vdW, no PE)     -- requires smiles CSVs
 FEAT_MODES=(original full simple)
 FEAT=${FEAT_MODES[$SLURM_ARRAY_TASK_ID]}
+HP_FILE="results/best_hp_ct.json"
+HP_ARGS=()
+[ -f "$HP_FILE" ] && HP_ARGS=(--hp_file "$HP_FILE")
 
 echo "CPUs: $SLURM_CPUS_PER_TASK | feat_mode: $FEAT"
 source ../../../venv/bin/activate
@@ -26,5 +29,6 @@ python3 -u exp_ct.py \
     --feat_mode $FEAT \
     --epochs 300 \
     --batch_size 16 \
-    --pe_k 5
+    --pe_k 5 \
+    "${HP_ARGS[@]}"
 deactivate

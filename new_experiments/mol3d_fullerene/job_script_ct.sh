@@ -15,11 +15,15 @@ module load lang/Python/3.12.3-GCCcore-13.3.0
 #========[ + + + + Job Steps + + + + ]========#
 # 0: full  1: simple  2: coords
 MODES=(full simple coords)
+HP_FILE="results/best_hp_ct.json"
+HP_ARGS=()
+[ -f "$HP_FILE" ] && HP_ARGS=(--hp_file "$HP_FILE")
 
 echo "CPUs: $SLURM_CPUS_PER_TASK | feat_mode: ${MODES[$SLURM_ARRAY_TASK_ID]}"
 source ../../venv/bin/activate
 export PYTHONUNBUFFERED=1
 python3 -u exp_ct.py \
     --feat_mode "${MODES[$SLURM_ARRAY_TASK_ID]}" \
-    --output "results_ct_${MODES[$SLURM_ARRAY_TASK_ID]}.json"
+    --output "results_ct_${MODES[$SLURM_ARRAY_TASK_ID]}.json" \
+    "${HP_ARGS[@]}"
 deactivate

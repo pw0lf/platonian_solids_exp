@@ -15,11 +15,16 @@ module load lang/Python/3.12.3-GCCcore-13.3.0
 #========[ + + + + Job Steps + + + + ]========#
 # 0: GCN  1: GAT  2: GIN
 MODELS=(GCN GAT GIN)
+MODEL=${MODELS[$SLURM_ARRAY_TASK_ID]}
+HP_FILE="results/best_hp_${MODEL,,}.json"
+HP_ARGS=()
+[ -f "$HP_FILE" ] && HP_ARGS=(--hp_file "$HP_FILE")
 
-echo "CPUs: $SLURM_CPUS_PER_TASK | model: ${MODELS[$SLURM_ARRAY_TASK_ID]}"
+echo "CPUs: $SLURM_CPUS_PER_TASK | model: $MODEL"
 source ../../venv/bin/activate
 export PYTHONUNBUFFERED=1
 python3 -u exp_gnn.py \
-    --model "${MODELS[$SLURM_ARRAY_TASK_ID]}" \
-    --output "results_${MODELS[$SLURM_ARRAY_TASK_ID]}.json"
+    --model "$MODEL" \
+    --output "results_${MODEL}.json" \
+    "${HP_ARGS[@]}"
 deactivate
