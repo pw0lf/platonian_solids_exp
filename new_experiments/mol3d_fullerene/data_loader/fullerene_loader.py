@@ -25,7 +25,7 @@ from mol3d_ct_rand import (
     make_atom_features, make_bond_features, make_ring_features,
     make_simple_atom_features, make_simple_bond_features, make_simple_ring_features,
     make_coord_atom_features, make_coord_bond_features, make_coord_ring_features,
-    make_matrices,
+    make_matrices, make_cin_indices,
 )
 from pe import CC_RWBSPe
 
@@ -158,3 +158,18 @@ def load_fullerene_ct(root, target="Gap", use_pe=True, pe_k=5, feat_mode="full")
         if item is not None:
             data.append(item)
     return data
+
+
+# ── CIN / CIN++ ──────────────────────────────────────────────────────────────
+
+def _process_fullerene_mol_cin(mol, y):
+    sssr = list(Chem.GetSymmSSSR(mol))
+    x_0 = make_atom_features(mol)
+    x_1 = make_bond_features(mol, sssr)
+    x_2 = make_ring_features(mol, sssr) if len(sssr) > 0 else torch.zeros(0, 6, dtype=torch.float32)
+    cin = make_cin_indices(mol, sssr)
+    return dict(x_0=x_0, x_1=x_1, x_2=x_2, y=y, **cin)
+
+
+def load_fullerene_cin(root, target="Gap"):
+    return [_process_fullerene_mol_cin(mol, y) for mol, y in _iter_fullerene_mols(root, target)]
