@@ -228,6 +228,108 @@ def make_matrices(mol, sssr):
     return icd01, icd02, icd12, make_adj(icd01), make_adj(icd01.T), make_adj(icd12.T)
 
 
+# ── CIN / CIN++ cell-complex index builder ─────────────────────────────────────
+# Same up/down/boundary semantics as lrgb/peptides_struct/data_loader/lrgb_cin.py,
+# adapted from a PyG edge_index to an RDKit mol + its SSSR ring list (ring = a
+# sequence of atom indices, e.g. from Chem.GetSymmSSSR(mol)).
+
+def _idx_or_empty(src, dst):
+    return torch.tensor([src, dst], dtype=torch.long) if src else torch.zeros(2, 0, dtype=torch.long)
+
+
+def _pairs_within_groups(groups):
+    """groups: dict[key -> list[cell_idx]]. Returns (src, dst, shared_key) for
+    every ordered pair of distinct cells within the same group."""
+    src, dst, shared = [], [], []
+    for key, members in groups.items():
+        if len(members) < 2:
+            continue
+        for i in members:
+            for j in members:
+                if i != j:
+                    src.append(i); dst.append(j); shared.append(key)
+    return src, dst, shared
+
+
+def make_cin_indices(mol, sssr):
+    """Returns dict with up0/up1/down1/down2/boundary1/boundary2 index (+attr)
+    tensors and n_atoms/n_bonds/n_rings, for CIN-style message passing over the
+    atom/bond/ring cell complex. All index tensors are always present (possibly
+    empty, shape (2, 0))."""
+    n_atoms, n_bonds = mol.GetNumAtoms(), mol.GetNumBonds()
+
+    edges = [(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in mol.GetBonds()]
+    edge_to_idx = {}
+    for b, (u, v) in enumerate(edges):
+        edge_to_idx[(u, v)] = b
+        edge_to_idx[(v, u)] = b
+
+    ring_bonds = []
+    for ring in sssr:
+        ring = list(ring)
+        n = len(ring)
+        bonds = []
+        for i in range(n):
+            b = edge_to_idx.get((ring[i], ring[(i + 1) % n]))
+            if b is not None:
+                bonds.append(b)
+        ring_bonds.append(bonds)
+    n_rings = len(ring_bonds)
+
+    # boundary1: atom -> bond (each bond's 2 atom faces)
+    b1_face, b1_cell = [], []
+    for b, (u, v) in enumerate(edges):
+        b1_face.extend([u, v]); b1_cell.extend([b, b])
+    boundary1_index = _idx_or_empty(b1_face, b1_cell)
+
+    # boundary2: bond -> ring (each ring's boundary bonds)
+    b2_face, b2_cell = [], []
+    for r, bonds in enumerate(ring_bonds):
+        for b in bonds:
+            b2_face.append(b); b2_cell.append(r)
+    boundary2_index = _idx_or_empty(b2_face, b2_cell)
+
+    # up0: atoms sharing a bond (coboundary = the bond itself)
+    up0_src, up0_dst, up0_attr = [], [], []
+    for b, (u, v) in enumerate(edges):
+        up0_src.extend([u, v]); up0_dst.extend([v, u]); up0_attr.extend([b, b])
+    up0_index = _idx_or_empty(up0_src, up0_dst)
+    up0_attr_idx = torch.tensor(up0_attr, dtype=torch.long)
+
+    # up1: bonds sharing a ring (coboundary = the ring)
+    ring_groups = {r: bonds for r, bonds in enumerate(ring_bonds)}
+    up1_src, up1_dst, up1_attr = _pairs_within_groups(ring_groups)
+    up1_index = _idx_or_empty(up1_src, up1_dst)
+    up1_attr_idx = torch.tensor(up1_attr, dtype=torch.long)
+
+    # down1: bonds sharing an atom (boundary = the atom), for CIN++
+    atom_groups = {}
+    for b, (u, v) in enumerate(edges):
+        atom_groups.setdefault(u, []).append(b)
+        atom_groups.setdefault(v, []).append(b)
+    down1_src, down1_dst, down1_attr = _pairs_within_groups(atom_groups)
+    down1_index = _idx_or_empty(down1_src, down1_dst)
+    down1_attr_idx = torch.tensor(down1_attr, dtype=torch.long)
+
+    # down2: rings sharing a bond (boundary = the bond), for CIN++
+    bond_groups = {}
+    for r, bonds in enumerate(ring_bonds):
+        for b in bonds:
+            bond_groups.setdefault(b, []).append(r)
+    down2_src, down2_dst, down2_attr = _pairs_within_groups(bond_groups)
+    down2_index = _idx_or_empty(down2_src, down2_dst)
+    down2_attr_idx = torch.tensor(down2_attr, dtype=torch.long)
+
+    return dict(
+        n_atoms=n_atoms, n_bonds=n_bonds, n_rings=n_rings,
+        boundary1_index=boundary1_index, boundary2_index=boundary2_index,
+        up0_index=up0_index, up0_attr_idx=up0_attr_idx,
+        up1_index=up1_index, up1_attr_idx=up1_attr_idx,
+        down1_index=down1_index, down1_attr_idx=down1_attr_idx,
+        down2_index=down2_index, down2_attr_idx=down2_attr_idx,
+    )
+
+
 # ── per-molecule processing ───────────────────────────────────────────────────
 
 def _process_mol(mol, properties_df, global_idx, use_pe, pe_k, feat_mode):
